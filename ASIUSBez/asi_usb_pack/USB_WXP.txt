@@ -1,0 +1,20 @@
+How To Get ASI USB To Work on Windows XP
+----------------------------------------
+
+1.  If there is a file named EZUSBW2K.PNF on your computer, delete it, 
+unplug your MS-2000 from the USB port, and restart the computer.  
+
+2. If there is a file named EZUSBW2K.INF on your computer, delete it.
+
+3.  Copy EZUSBWXP.INF to the directory that contains .INF files, usually 
+C:\Windows\inf.
+
+4. Ensure that EZUSB.SYS is in the directory that contains .SYS files, 
+usually C:\Windows\system32\drivers.
+
+5.  Shut down the computer, ensure that DIP switches 4 & 5 on your MS-2000 
+are in the down position, connect the USB cable, and turn on the computer.  
+The Windows Plug and Play system will automatically find the "New 
+Hardware" and display a dialog.  Select the "Search for a suitable 
+driver..." option.  Windows will configure itself, and the system should 
+work correctly after that.

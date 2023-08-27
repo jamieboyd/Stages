@@ -1,0 +1,190 @@
+/*	XOP-specific resources for ASIUSBez
+
+	This file is compiled by the resource compiler and creates XOP-specific
+	resources that IGOR looks for in an XOP module.
+*/
+
+#include "XOPResources.h"			// Defines XOP-specific symbols.
+
+1100 STR#							// Custom error messages.
+BEGIN
+	"ASIUSBez requires Igor Pro 5.0 or later.\0",
+	"The ASIUSB lib reported a sync warning.\0",
+	"The ASIUSB lib reported a bad write error.\0",
+	"The ASIUSB lib reported a bad read error.\0",
+	"The ASIUSB lib reported a device does not exist error.\0",
+	"The ASIUSB lib reported a bad handle error.\0",
+	"The ASIUSB lib reported a time out error.\0",
+	"The ASIUSB lib reported a device in use error.\0",
+	"The ASIUSB lib reported a bad data error.\0",
+	"The ASIUSB lib reported a transmission error.\0",
+	"The ASIUSB lib reported an internal DLL error.\0",
+	"The ASIUSB lib reported an invalid command.\0",
+	"The ASIUSB lib reported an empty packet.\0",
+	"The ASIUSB lib reported an invalid packet size.\0",
+	"The ASIUSB lib reported an out of range error.\0",
+	"The ASIUSB lib reported an axis was already in motion error.\0",
+	"The ASIUSB lib reported an error with an unknown error code.\0",
+	"The ASI USB device number was out of range.\0",
+	"The requested ASI USB device could not be opened.\0",
+	0,								// NOTE: 0 required to terminate the resource.
+END
+
+1101 STR#							// Misc strings read by Igor.
+BEGIN
+	"-1\0",							// -1 means we don't want to add a menu item.
+	"No Menu Item\0",				// Igor ignores item 2 because item 1 is -1.
+	"ASIUSBez Help.ihf\0",			// Name of XOP's help file.
+	0,								// NOTE: 0 required to terminate the resource.
+END
+
+1100 XOPI							// XOPI - Describes general XOP properties to IGOR. 
+BEGIN
+	XOP_VERSION,					// Version number of host XOP system.
+	DEV_SYS_CODE,					// Code for development system used to make XOP.
+	0,								// Obsolete - set to zero.
+	0,								// Obsolete - set to zero.
+	XOP_TOOLKIT_VERSION				// XOP Toolkit version.
+END
+
+1100 XOPF							// Describes functions added by XOP to IGOR.
+BEGIN
+	"ASIUSBInit\0",					// Function name.
+	F_IO | F_EXTERNAL,				// Function category,
+	NT_FP64,						// Return value type.
+		0,							// NOTE: 0 required to terminate list of parameter types.
+	
+	"ASIUSBListDevices\0",			// Lists ASIUSB Devices present in the system at last init
+	F_STR | F_EXTERNAL,				// Function category,
+	HSTRING_TYPE,					// Return value type is string handle.
+	0,
+	
+	"ASIUSBOpen\0",					// Function name.
+	F_IO | F_EXTERNAL,				// Function category,
+	NT_FP64,						// Return value type.
+		NT_FP64,					// Device Number
+		0,							// NOTE: 0 required to terminate list of parameter types.
+	
+	"ASIUSBClose\0",				// Function name.
+	F_IO | F_EXTERNAL,				// Function category,
+	NT_FP64,						// Return value type.
+		NT_FP64,					// Device Number	
+		0,							// NOTE: 0 required to terminate list of parameter types.
+
+	"ASIUSBGetXYZ\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference x-value
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference y-value
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference z-value
+		0,
+	
+	"ASIUSBGetXY\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference x-value
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference y-value
+		0,
+
+	"ASIUSBMovAbsXYZ\0",			// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64,					// X value to move to
+		NT_FP64,					// Y value to move to
+		NT_FP64,					// Z value to move to
+		0,
+	
+	"ASIUSBMovAbsXY\0",			// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// X value to move to
+		NT_FP64,					// Y value to move to
+		0,
+	
+	"ASIUSBMovRelXYZ\0",			// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64,					// X amount to move
+		NT_FP64,					// Y amount to move
+		NT_FP64,					// Z amount to move
+		0,
+	
+	"ASIUSBIsBusy\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number
+		0,
+
+	"ASIUSBSetZero\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		0,
+
+	"ASIUSBHalt\0",					// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number
+		0,
+	
+	"ASIUSBSetKp\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64,					// X value for PID "proportional"
+		NT_FP64,					// Y value for PID "proportional"
+		NT_FP64,					// Z value for PID "proportional"
+		0,
+	
+	"ASIUSBSetKi\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64,					// X value for PID "integral"
+		NT_FP64,					// Y value for PID "integral"
+		NT_FP64,					// Z value for PID "integral"
+		0,
+
+	"ASIUSBSetKd\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64,					// X value for PID "derivative"
+		NT_FP64,					// Y value for PID "derivative"
+		NT_FP64,					// Z value for PID "derivative"
+		0,
+	
+	"ASIUSBGetKp\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference x-value for "proportional"
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference y-value for "proportional"
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference z-value for "proportional"
+		0,
+
+	"ASIUSBGetKi\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference x-value for "integral"
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference y-value for "integral"
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference z-value for "integral"
+		0,
+
+	"ASIUSBGetKd\0",				// Function name
+	F_IO | F_EXTERNAL				// Function Category
+	NT_FP64,						// Return value type
+		NT_FP64,					// Device Number	
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference x-value for "derivative"
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference y-value for "derivative"
+		NT_FP64 | FV_REF_TYPE,		// pass-by-reference z-value for "derivative"
+		0,
+	// More function descriptions can appear here.
+	
+	0,								// NOTE: 0 required to terminate the resource.
+END
