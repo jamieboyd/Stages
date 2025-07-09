@@ -1,19 +1,21 @@
-#pragma rtGlobals=1		// Use modern global access method.
-#pragma version= 5.1		// modification date 2016/10/13 by Jamie Boyd
-#pragma IgorVersion=6.2
+#pragma rtGlobals=3
+#pragma version= 5.1
+#pragma IgorVersion=7
 #include "GUIPList"
 #include "GUIPControls"
 
-// Designed to work with the  VDT2 XOP for serial devices, or the ASIUSBez XOP for ASI devices plugged into USB
-// This procedure will compile without any of the VDT, VDT2, or ASIUSBez XOPs, but each
-// stage encoder procedure will need to be written specifically for one or the other of these.
+// Modified: 2025/07/08 by Jamie Boyd - Use new GUIPSetVar routines
+// Modified: 2025/07/07 by Jamie Boyd - removed reference to VDT and ASIUSBez
+
+
+// Designed to work with the VDT2 XOP for serial control
 
 // The idea is that the control panel that this general procedure makes works with multiple specific procedures, 
 // each targeting a different stage encoder, as long as the procedures for the stage encoder follow a few rules:
 // StageStartStage will make a packages folder named after the stage encoder procedure and populate it with:
 // 1) global string for the name of the port used by the stage encoder
-// 2) global variables for capabilities for XY, Z, and Axial movement, motorization, ability to set PID values, and  if it is a USB or serial device:
-// hasXY, hasZ, hasAx, hasMotor, hasPID, isUSB
+// 2) global variables for capabilities for XY, Z, and Axial movement, motorization, ability to set PID values
+// hasXY, hasZ, hasAx, hasMotor, hasPID
 // Although it is possible to use a single procedure with devices of different functionality and read the functionality after initialization,
 // StageStartStage makes the control panel before intitialization, so each procedure must set functionality with hard-coded globals
 // I recommend setting globals from  static constants, which are easily modified
@@ -61,7 +63,7 @@ end
 //*************************************************************************************************
 //Template for Stage Setup functions
 Function StageSetUpPort_Template (thePortName)
-	string thePortName // Name of the serial port or ASI-USB device
+	string thePortName // Name of the serial port
 	return 0
 end
 
@@ -231,7 +233,7 @@ end
 
 //****************************************************************************************************************************************************
 // Makes a panel for a given stage encoder, with customizations for the encoder
-// Last modified 2015/04/12 by Jamie Boyd
+// Last modified 2025/07/02 by Jamie Boyd - removed reference to ASIUSBez
 Function StageStartStage(theStageEncoder, [thePort])
 	String theStageEncoder
 	String thePort
@@ -250,10 +252,6 @@ Function StageStartStage(theStageEncoder, [thePort])
 		string savedfolderStr = getdatafolder (1)
 		// packages folder for Stages
 		NewDataFolder/O/S root:packages:Stages
-		// Check for ASIUSBInit function and call it to make a list of available devices, so list can appear in popup menus
-		if ( exists ("ASIUSBInit") == 3)
-			execute "ASIUSBInit ()" // use execute to prevent compilation error if not present. I know, it's such an Igor 5 thing to do
-		endif
 		setdataFolder $savedfolderStr
 		doUpdate
 	endif
@@ -287,7 +285,7 @@ Function StageMakeGlobals (theStageEncoder)
 			newdatafolder root:packages
 		endif
 		newDataFolder $"root:packages:" + theStageEncoder
-		// name of serial port (or ASI USB device)
+		// name of serial port
 		string/G $"root:packages:" + theStageEncoder + ":thePort"
 		// distances from 0
 		variable/G  $"root:packages:" + theStageEncoder + ":xDistanceFromZero"
@@ -316,7 +314,6 @@ Function StageMakeGlobals (theStageEncoder)
 		variable/G $"root:packages:" + theStageEncoder + ":zRes"
 		variable/G $"root:packages:" + theStageEncoder + ":aRes"
 		// capabilities
-		variable/G $"root:packages:" + theStageEncoder + ":isUSB"
 		variable/G $"root:packages:" + theStageEncoder + ":hasLock"
 		variable/G $"root:packages:" + theStageEncoder + ":isLocked"
 		variable/G $"root:packages:" + theStageEncoder + ":hasXY"
@@ -356,16 +353,14 @@ Function StageMakeGlobals (theStageEncoder)
 end
 
 //*********************************************************************************************
-//Returns a list of available serial ports for use with stage encoders using VDTGetPortList and VDTGetPortList2
+//Returns a list of available serial ports for use with stage encoders using VDTGetPortList2
 // Last Modified 2015/04/12 by Jamie Boyd
 Function/S StageListPorts ()
-	
-	string returnStr = ""
-	if (exists("VDT2" ) == 4)
-		execute "VDTGetPortList2" // Use "Execute" so procedure will compile with VDT or VDT2 xop or neither 
-	elseif (exists("VDT" ) == 4)
-		execute "VDTGetPortList"
+	string returnStr=""
+	if (strlen(ListMatch(IgorINfo (10), "VDT2*")) > 2)
+		execute "VDTGetPortList2" // Use "Execute" so procedure will compile with VDT2 or VDT2-64 xop or neither
 	endif
+	
 	SVAR/Z S_VDT = :S_VDT
 	if (SVAR_EXISTS (S_VDT))
 		returnStr = S_VDT
@@ -376,7 +371,7 @@ end
 //*******************************************************************************
 // Opens a control panel for common stage related functions
 // Has controls for both reading and setting stage coordinates
-// Last Modified 2015/04/12 by Jamie Boyd
+// Last modified 2025/07/08 by Jamie Boyd - use new GUIPSIsetVarEnable function
 Function StageMakePanel (theStageEncoder) 
 	string theStageEncoder
 	
@@ -396,7 +391,6 @@ Function StageMakePanel (theStageEncoder)
 	NVAR hasLock
 	NVAR hasAuto
 	NVAR hasPID
-	NVAR isUSB
 	SVAR thePort
 	// How wide do we need to make the panel? 
 	variable nAxes = 2*hasXY + hasZ + hasAx
@@ -425,10 +419,8 @@ Function StageMakePanel (theStageEncoder)
 		Button PIDButton,help={"Opens a panel where proportional-integral-derivative settings for this encoder can be adjusted. Use at your own risk."}
 	endif
 	// Reset IO for serial - 
-	if (!(isUSB))
-		Button ResetIOButton,pos={6,50},size={65,20},proc=StageResetIOProc,title="Clear buffer"
-		Button ResetIOButton,help={"Clears spurious characters that may be remaining in the serial port input/output buffer."}
-	endif
+	Button ResetIOButton,pos={6,50},size={65,20},proc=StageResetIOProc,title="Clear buffer"
+	Button ResetIOButton,help={"Clears spurious characters that may be remaining in the serial port input/output buffer."}
 	// Toggle maual
 	if ((hasMotor) && (hasLock))
 		NVAR isLocked
@@ -436,22 +428,13 @@ Function StageMakePanel (theStageEncoder)
 		CheckBox ManualToggleCheck,variable= isLocked
 		CheckBox ManualToggleCheck, help = {"Inactivates manual, but not computer controlled, movement on all axes."}
 	endif
-	// Popup and titlebox for serial port/USB device - slightly different for USB vs serial devices
+	// Popup and titlebox for serial port
 	string portList = ""
 	PopupMenu thePortPopup pos={6,72},size={59,21}, mode=0, proc=Stages_PortPopMenuProc
 	TitleBox thePortTitle, pos={81,72}, size={38,21}, variable = thePort
-	if (isUSB)
-		PopupMenu thePortPopup value =#"root:packages:Stages:S_ASIUSBDevList", title="Device:", help = {"Choose an ASI USB device to use as this stage encoder."}
-		TitleBox thePortTitle help = {"Shows the ASI USB device selected as this stage encoder."} 
-		SVAR/Z USBlist = root:Packages:Stages:S_ASIUSBDevList
-		if (SVAR_Exists(USBlist))
-			portList = USBlist
-		endif
-	else
-		PopupMenu thePortPopup, value= #"stageListPorts()",  title="Port:", help = {"Choose a serial port to use with this stage encoder."}
-		TitleBox thePortTitle help = {"Shows the serial port used by this stage encoder."}
-		portList =StageListPorts ()
-	endif
+	PopupMenu thePortPopup, value= #"stageListPorts()",  title="Port:", help = {"Choose a serial port to use with this stage encoder."}
+	TitleBox thePortTitle help = {"Shows the serial port used by this stage encoder."}
+	portList =StageListPorts ()
 	// Activity indicator for this stage encoder, have to use execute to make dependency formula
 	ValDisplay isBusyValDisp,pos={6,133},size={56,18},title="Activity", help = {"\"Glows\" orange when stage is active."}
 	ValDisplay isBusyValDisp,limits={-1,1,0},barmisc={0,0},mode= 1,highColor= (65280,21760,0),lowColor= (56576,56576,56576)
@@ -480,38 +463,34 @@ Function StageMakePanel (theStageEncoder)
 		endif
 		// X
 		TitleBox XTitle,pos={(xOffset + 8),36},size={15,24},title="X",fSize=20,frame=0,fStyle=1
-		SetVariable XDistanceSetVar,pos={(xOffset + 4),101},size={134,16}, title="From zero", fSize=12, format="%.2W0Pm"
-		SetVariable XDistanceSetVar,value= $"root:Packages:" + theStageEncoder + ":XDistanceFromZero", limits={-INF, inf, 0}
-		if (hasMotor)
-			SetVariable XDistanceSetVar, proc=GUIPSIsetVarProc
-			SetVariable XDistanceSetVar,userdata=  "StageSetDistanceProc;" + num2str (xyMin) + ";" + num2str (xyMax)+ ";;"
+		SetVariable XDistanceSetVar,pos={(xOffset + 4),101},size={134,16}, title="From zero", fSize=12
+		SetVariable XDistanceSetVar,value= $"root:Packages:" + theStageEncoder + ":XDistanceFromZero"
+		if (hasMotor) // enable moving by setvar function, and add buttons and stepsize setvariable 
+			GUIPSIsetVarEnable ("", "XDistanceSetVar", "StageSetDistanceProc", xyMin, xyMax, 0, 0, 0, 2, "m")
 			Button XleftStepButton,pos={(xOffset + 33),28},size={88,20},proc=StageStepButtonProc,title="Left 1 step"
 			Button XrightStepButton,pos={(xOffset + 33),51},size={88,20},proc=StageStepButtonProc,title="Right 1 Step"
-			SetVariable XstepSizeSetvar,pos={(xOffset + 4),80},size={134,16},proc=GUIPSIsetVarProc,title="Step Size"
-			SetVariable XstepSizeSetvar,userdata=  "StageSetIncProc;" + num2str (xyRes)+ ";" + num2str ((xyMax-xyMin)/10) + ";autoInc;"
-			SetVariable XstepSizeSetvar,format="%.2W0Pm", fSize=12
-			SetVariable XstepSizeSetvar,limits={-inf, inf, xStepSize},value= $"root:Packages:" + theStageEncoder  + ":xStepSize"
-		else // no motor
-			SetVariable XDistanceSetVar, noedit=1
+			SetVariable XstepSizeSetvar,pos={(xOffset + 4),80},size={134,16},title="Step Size", fSize=12
+			SetVariable XstepSizeSetvar value= $"root:Packages:" + theStageEncoder  + ":xStepSize"
+			GUIPSIsetVarEnable ("", "XstepSizeSetvar", "StageSetIncProc", xyRes, (xyMax-xyMin)/10, 1e-6, 1, xyRes, 2, "m")
+		else // no motor -  no editing of position set var, no buttons or step size editing
+			SetVariable XDistanceSetVar, noedit=1, limits={-INF, inf, 0}, format="%.2W0Pm"
 		endif
 		xOffset += 136
 		// Y
 		TitleBox YTitle,pos={(xOffset + 8),36},size={15,24},title="Y",fSize=20,frame=0,fStyle=1
-		SetVariable YDistanceSetVar,pos={(xOffset + 4),101},size={134,16},title="From zero",  fSize=12, format="%.2W0Pm"
-		SetVariable YDistanceSetVar value= $"root:Packages:" + theStageEncoder + ":YDistanceFromZero", limits={-INF, inf, 0}
+		SetVariable YDistanceSetVar,pos={(xOffset + 4),101},size={134,16},title="From zero", fSize=12
+		SetVariable YDistanceSetVar value= $"root:Packages:" + theStageEncoder + ":YDistanceFromZero"
 		if (hasMotor)
-			SetVariable YDistanceSetVar,proc=GUIPSIsetVarProc
-			SetVariable YDistanceSetVar,userdata=  "StageSetDistanceProc;" +  num2str (xyMin) + ";" + num2str (xyMax) + ";;"
+			GUIPSIsetVarEnable ("", "YDistanceSetVar", "StageSetDistanceProc", xyMin, xyMax, 0, 0, 0, 2, "m")
 			Button YForwardStepButton,pos={(xOffset + 33),28},size={88,20},proc=StageStepButtonProc,title="Forward 1 Step"
 			Button YBackStepButton,pos={(xOffset + 33),51},size={88,20},proc=StageStepButtonProc,title="Back 1 Step"
-			SetVariable YStepSizeSetVar,pos={(xOffset + 4),80},size={134,16},proc=GUIPSIsetVarProc,title="Step Size"
-			SetVariable YStepSizeSetVar,userdata=  "StageSetIncProc;" + num2str (xyres)+ ";" + num2str ((xyMax-xyMin)/10) + ";autoInc;"
-			SetVariable YStepSizeSetVar,format="%.2W0Pm", fSize=12
-			SetVariable YStepSizeSetVar,limits={-inf,inf,yStepSize},value= $"root:Packages:" + theStageEncoder + ":YstepSize"
+			SetVariable YStepSizeSetVar,pos={(xOffset + 4),80},size={134,16},title="Step Size", fSize=12
+			SetVariable YStepSizeSetVar,value= $"root:Packages:" + theStageEncoder + ":YstepSize"
+			GUIPSIsetVarEnable ("", "YstepSizeSetvar", "StageSetIncProc", xyRes, (xyMax-xyMin)/10, 1e-6, 1, xyRes, 2, "m")
 		else
-			SetVariable YDistanceSetVar, noedit =1
+			SetVariable YDistanceSetVar, noedit =1, limits={-INF, INF, 0}, format="%.2W0Pm"
 		endif
-		xOffset += 141
+		xOffset += 142
 	endif
 	// Add Z controls, if present
 	if (hasZ)
@@ -521,44 +500,42 @@ Function StageMakePanel (theStageEncoder)
 		NVAR zRes
 		GroupBox FocusGroup,pos={(xOffset),2},size={142,153},title="Focus/Z",fSize=16,fStyle=1
 		TitleBox Ztitle,pos={(xOffset + 4),36},size={15,24},title="Z",fSize=20,frame=0,fStyle=1
-		SetVariable ZDistanceSetVar,pos={(xOffset + 4),101},size={134,16}, title="From zero", fSize=12, format="%.2W0Pm"
+		SetVariable ZDistanceSetVar,pos={(xOffset + 4),101},size={134,16}, title="From zero", fSize=12
 		SetVariable ZDistanceSetVar value= $"root:Packages:" + theStageEncoder + ":ZDistanceFromZero", limits={-INF, inf, 0}
 		if (hasMotor)
-			SetVariable ZDistanceSetVar,proc=GUIPSIsetVarProc
-			SetVariable ZDistanceSetVar,userdata=  "StageSetDistanceProc;" +  num2str (zMin) + ";" + num2str (zMax) + ";;"
+			GUIPSIsetVarEnable ("", "ZDistanceSetVar", "StageSetDistanceProc", zMin, zMax, 0, 0, 0, 2, "m")
 			Button ZUpStepButton,pos={(xOffset + 33),28},size={88,20},proc=StageStepButtonProc,title="Up 1 Step"
 			Button ZDownStepButton,pos={(xOffset + 33),51},size={88,20},proc=StageStepButtonProc,title="Down 1 Step"
-			SetVariable ZStepSizeSetVar,pos={(xOffset + 4),80},size={134,16},proc=GUIPSIsetVarProc,title="Step Size"
-			SetVariable ZStepSizeSetVar,userdata=  "StageSetIncProc;" + num2str (zRes)+  ";" + num2str ((zMax-zMin)/10) + ";autoInc;"
-			SetVariable ZStepSizeSetVar,format="%.1W0Pm", fSize=12
-			SetVariable ZStepSizeSetVar,limits={0,inf,zStepSize},value= $"root:Packages:" + theStageEncoder + ":ZstepSize"
+			SetVariable ZStepSizeSetVar,pos={(xOffset + 4),80},size={134,16},title="Step Size",fSize=12
+			SetVariable ZStepSizeSetVar,value= $"root:Packages:" + theStageEncoder + ":ZstepSize"
+			GUIPSIsetVarEnable ("", "ZStepSizeSetVar", "StageSetIncProc", zRes, (zMax-zMin)/10, zRes, 1, zRes, 2, "m")
 			Button ZGoToZeroButton,pos={(xOffset + 34),126},size={74,21},proc=StageGoToZeroProc,title="Go to Zero"
 		else
-			SetVariable ZDistanceSetVar, noedit =1
+			SetVariable ZDistanceSetVar, noedit =1, limits={-INF, INF, 0}, format="%.2W0Pm"
 		endif
 		xOffset += 142
 	endif
 	// Add Axial controls, if Present
 	if (hasAx)
 		NVAR aStepSize
-		NVAR axMIN = $"root:packages:" + theStageEncoder + ":axMIN"
-		NVAR axMax = $"root:packages:" + theStageEncoder + ":axMAX"
+		NVAR aMIN
+		NVAR aMax
+		NVAR aRes
 		GroupBox AxisGroup,pos={(xOffset),2},size={142,153},title="Axial",fSize=16,fStyle=1
 		TitleBox Axtitle,pos={(xOffset + 4),36},size={15,24},title="Ax",fSize=20,frame=0,fStyle=1
-		SetVariable axDistanceSetVar,pos={(xOffset + 4),101},size={134,16}, title="From zero", fSize=12, format="%.2W0Pm"
-		SetVariable axDistanceSetVar value= $"root:Packages:" + theStageEncoder + ":axDistanceFromZero", limits={-INF, inf, 0}
+		SetVariable axDistanceSetVar,pos={(xOffset + 4),101},size={134,16}, title="From zero", fSize=12
+		SetVariable axDistanceSetVar value= $"root:Packages:" + theStageEncoder + ":axDistanceFromZero"
 		if (hasMotor)
-			SetVariable axDistanceSetVar,proc=GUIPSIsetVarProc
-			SetVariable axDistanceSetVar,userdata=  "StageSetDistanceProc;" +  num2str (axMin) + ";" + num2str (axMax) + ";;"
+			GUIPSIsetVarEnable ("", "axDistanceSetVar", "StageSetDistanceProc", aMin, aMax, 0, 0, 0, 2, "m")
 			Button axOutStepButton,pos={(xOffset + 33),28},size={88,20},proc=StageStepButtonProc,title="Out 1 Step"
 			Button axInStepButton,pos={(xOffset + 33),51},size={88,20},proc=StageStepButtonProc,title="In 1 Step"
-			SetVariable aStepSizeSetVar,pos={(xOffset + 4),80},size={134,16},proc=GUIPSIsetVarProc,title="Step Size"
-			SetVariable aStepSizeSetVar,userdata=  "StageSetIncProc;" + num2str (aStepSize)+ ";autoInc;"
-			SetVariable aStepSizeSetVar,format="%.1W0Pm", fSize=12
-			SetVariable aStepSizeSetVar,limits={0,inf,aStepSize},value= $"root:Packages:" + theStageEncoder + ":aStepSize"
+			SetVariable aStepSizeSetVar,pos={(xOffset + 4),80},size={134,16},title="Step Size", fSize=12
+			SetVariable aStepSizeSetVar,value= $"root:Packages:" + theStageEncoder + ":aStepSize"
+			GUIPSIsetVarEnable ("", "aStepSizeSetVar", "StageSetIncProc", aRes, (aMax-aMin)/10, aRes, 1, aRes, 2, "m")
+			
 			Button axGoToZeroButton,pos={(xOffset + 34),126},size={74,21},proc=StageGoToZeroProc,title="Go to Zero"
 		else
-			SetVariable axDistanceSetVar, noedit =1
+			SetVariable axDistanceSetVar, noedit =1,limits={-INF, INF, 0}, format="%.2W0Pm"
 		endif
 	endif
 	setdatafolder $SavedFolder
@@ -567,15 +544,11 @@ Function StageMakePanel (theStageEncoder)
 	StageAddFunc (7, 95, theStageEncoder + "_Controls") // 7,95 are X and Y offset to where special controls can be placed
 	// Set hook function to close port when panel is closed
 	setwindow $theStageEncoder + "_Controls"  hook(QHook )=StageClosePortAndPanel
-	// Check serial ports/USB devices and set port/device if only one is found
+	// Check serial ports and set port if only one is found
 	variable Numports = ItemsInList (portList)
 	switch (numports)
 		case 0:	// no ports/devices found
-			if (isUSB)
-				doalert 0, "No ASI USB devices were found, so stage/focus controls can not be used. Try a Serial Port stage procedure instead."
-			else
-				doalert 0, "No Serial Ports were found, so stage/focus controls can not be used. Try the ASI-USB stage procedure instead."
-			endif
+			doalert 0, "No Serial Ports were found, so stage/focus controls can not be used."
 			DoWindow/K $theStageEncoder + "_Controls"
 			return 1
 			break
@@ -583,11 +556,7 @@ Function StageMakePanel (theStageEncoder)
 			StagePortProc(theStageEncoder, stringfromlist (0, portList, ";")) 
 			break
 		default:	// more than one serial port.
-			if (isUSB)
-				thePort = "SELECT DEVICE"
-			else
-				thePort = "SELECT PORT"
-			endif
+			thePort = "SELECT PORT"
 			break
 	endswitch
 end
