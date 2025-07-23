@@ -81,21 +81,21 @@ Function StageUpDate_MicroCode2 (xS, yS, zS, axS)
 	// Globals
 	NVAR isBusy = root:packages:MicroCode2:isBusy // MicroCode2 is busy processing a command
 	isBusy = 1;doupdate
+	SVAR thePortName = root:packages:MicroCode2:thePort
 	NVAR LastStageX = root:packages:MicroCode2:xDistancefromZero
 	NVAR LastStageY = root:packages:MicroCode2:yDistancefromZero
 	NVAR hasZ =root:packages:MicroCode2:hasZ
 	if (hasZ)
 		NVAR LastStageZ = root:packages:MicroCode2:zDistancefromZero
 	endif
-	vdtwrite2/O = 2 "\r"
+	vdtwrite2/P =$possiblyquotename (thePortName)/O = 2 "\r"
 	if (hasZ)
-		VDTRead2/O=2 xS, yS, zS
+		VDTRead2/P =$possiblyquotename (thePortName)/O=2 xS, yS, zS
 	else
-		VDTRead2/O=2 xS, yS
+		VDTRead2/P =$possiblyquotename (thePortName)/O=2 xS, yS
 	endif
 	if (V_VDT < 2)
-		SVAR thePort = root:packages:MicroCode2:thePort
-		VDT2 /P=$PossiblyQuoteName (thePort) killio
+		VDT2 /P=$PossiblyQuoteName (thePortName) killio
 		xS=nan;yS=Nan;zS=Nan
 		return 1
 	endif

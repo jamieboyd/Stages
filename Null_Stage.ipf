@@ -65,6 +65,7 @@ Function StageInitGlobals_null ()
 		variable/G  root:packages:null:zDistanceFromZero
 		if  (kNullHasMotor)
 			variable/G  root:packages:null:zStepSize= kNullZstepSize
+			variable/G  root:packages:null:zRes = kNullZstepSize
 			variable/G  root:packages:null:zPol=kNullZPol
 			variable/G root:packages:null:zMIN = kNullZMIN
 		variable/G root:packages:null:zMAX=kNullZMAX
