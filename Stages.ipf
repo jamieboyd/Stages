@@ -267,10 +267,10 @@ Function StageStartStage(theStageEncoder, [thePort])
 		Execute/P/Q "COMPILEPROCEDURES "
 		Execute/P/Q "StageInitGlobals_" + theStageEncoder + "()"
 		Execute/P/Q "StageMakePanel(\"" + theStageEncoder + "\")" 
-		if (!(ParamIsDefault(thePort )))
-			Execute/P/Q "StagePortProc(\"" + theStageEncoder + "\", \"" + thePort +  "\")" 
-		endif
 	endif
+	if (!(ParamIsDefault(thePort )))
+		Execute/P/Q "StagePortProc(\"" + theStageEncoder + "\", \"" + thePort +  "\")" 
+	   endif
 end
 
 
