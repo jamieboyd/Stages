@@ -1,71 +1,56 @@
-#pragma rtGlobals=1		// Use modern global access method.
-#pragma version= 4.0		// Last Modified Sep 13 2010 by Jamie Boyd
-#pragma IgorVersion=6.0 // Uses new background task management
+#pragma rtGlobals=3			// Use modern global access method.
+#pragma version= 2.0		// Last Modified 2025/11/26 by Jamie Boyd
+#pragma IgorVersion=8.05	// Uses threadsafe VDT2 extension first shipped with Igor 8.05
+
 
 //  MicroCode2 requires the  VDT2 extension
 
 // These Stage functions are for Boeckeler MicroCode II model 2-MR or 3-MR stage encoders
 // The 2-MR has only X and Y encoders, No Z, while the 3-MR has a Z-axis. Neither is  motorized
 // Use this constant to tell if the Microcode II has Z encoder.
-STATIC CONSTANT kMicroCodehasZ = 1
+STATIC CONSTANT kMicroCodehasZ = 0
 
 //*********************************************************************************************
-// Stage setup function
+// Stage setup function - sets globals for capabilities
+// Last Modified 2025/11/26 by Jamie Boyd
 Function StageInitGlobals_MicroCode2 ()
-
-	// Globals
-	if (!(datafolderExists ("root:packages:")))
-		newDataFolder root:packages:
-	endif 
-	if (!(datafolderExists ("root:packages:MicroCode2:")))
-		newDataFolder root:packages:MicroCode2:
-	endif
-	string/G root:packages:MicroCode2:thePort 
-	variable/G root:packages:MicroCode2:hasXY = 1
-	variable/G root:packages:MicroCode2:hasZ =kMicroCodehasZ
-	variable/G  root:packages:MicroCode2:hasAx = 0
-	variable/G root:packages:MicroCode2:hasMotor = 0
-	variable/G root:packages:MicroCode2:hasAuto =1
-	variable/G root:packages:MicroCode2:autoON = 0
-	variable/G root:packages:MicroCode2:xDistanceFromZero
-	variable/G root:packages:MicroCode2:yDistanceFromZero
-	if (kMicroCodehasZ)
-		variable/G root:packages:MicroCode2:zDistanceFromZero
-	endif
-	variable/G root:packages:MicroCode2:isBusy = 0
+	
+	WAVE Properties =  root:packages:MicroCode2:Properties
+	Properties [%has_XY] = 1
+	Properties [%has_Z] = kMicroCodehasZ
 end
+
 
 //*********************************************************************************************	
-//Open the given serial port for use with MicroCode2
+// Open the given serial port for use with MicroCode2
+// Last Modified 2025/11/26 by Jamie Boyd
 Function StageSetUpPort_MicroCode2 (thePortName)
-	string thePortName // string containing name orf serial port encoders are plugged into
+	string thePortName // string containing name of serial port encoders are plugged into
 	
-	VDTOperationsPort2 $PossiblyQuoteName (thePortName)
-	VDT2 /P=$PossiblyQuoteName (thePortName) baud=9600, databits=7, in=1, out=1, parity=0, stopbits=1
+	
+	VDT2/P=$PossiblyQuoteName (thePortName) baud=9600, databits=7, in=0, out=0, parity=0, stopbits=1
 	VDTOpenPort2 $PossiblyQuoteName (thePortName)
-	StageResetIO_MicroCode2 ()
-	return 0
 end
 
+
 //*********************************************************************************************
-// Reset I/O function for MicroCode2, clears any pending commands
-Function StageResetIO_MicroCode2 ()
+// Reset I/O function for MicroCode2, clears any pending serial commands in serial buffers
+// and clears the error display
+// Last Modified 2025/11/26 by Jamie Boyd
+Threadsafe Function StageResetIO_MicroCode2 (thePortName, Properties)
+	string thePortName
+	WAVE Properties
 	
-	NVAR isBusy = root:packages:MicroCode2:isBusy
-	isBusy = 1;doUpdate
-	CtrlNamedBackground MicroCode2BkgUpdate, STOP
-	SVAR thePortName = root:packages:MicroCode2:thePort
 	vdt2/P =$possiblyquotename (thePortName) killio
-	isBusy = 0
-	return 0
+	Properties[%ERR] = 0
 end
+
 
 //*********************************************************************************************
 // Port closing function for MicroCode2, tells VDT2 to close the serial port, called when panel is closed
-Function StageClose_MicroCode2 ()
+Function StageClose_MicroCode2 (thePortName)
+	String thePortName
 	
-	SVAR thePortName = root:packages:MicroCode2:thePort
-	CtrlNamedBackground MicroCode2BkgUpdate, STOP
 	VDTGetPortList2
 	if (findListItem (thePortName, S_VDT, ";") > -1)
 		VDTClosePort2 $PossiblyQuoteName (thePortName)
@@ -73,71 +58,106 @@ Function StageClose_MicroCode2 ()
 	return 0
 end
 
-//***********************************************************************************	
-// Update function
-Function StageUpDate_MicroCode2 (xS, yS, zS, axS)
-	variable &xS, &yS, &zS, &axS
-	
-	// Globals
-	NVAR isBusy = root:packages:MicroCode2:isBusy // MicroCode2 is busy processing a command
-	isBusy = 1;doupdate
-	SVAR thePortName = root:packages:MicroCode2:thePort
-	NVAR LastStageX = root:packages:MicroCode2:xDistancefromZero
-	NVAR LastStageY = root:packages:MicroCode2:yDistancefromZero
-	NVAR hasZ =root:packages:MicroCode2:hasZ
-	if (hasZ)
-		NVAR LastStageZ = root:packages:MicroCode2:zDistancefromZero
-	endif
+//*********************************************************************************************
+// MicroCode2 has a physical zero button, but we can also zero in software by saving locations in Zeros wave 
+// Last Modified 2025/11/26 by Jamie Boyd
+Threadsafe Function StageSetZero_MicroCode2 (thePortName, Selected, DistsFromZero, Zeros, Properties)
+	string thePortName
+	WAVE Selected
+	WAVE DistsFromZero
+	WAVE Zeros
+	WAVE Properties
+
+	variable xS, yS, zS
 	vdtwrite2/P =$possiblyquotename (thePortName)/O = 2 "\r"
-	if (hasZ)
+	if (Properties[%has_Z])
 		VDTRead2/P =$possiblyquotename (thePortName)/O=2 xS, yS, zS
+		if (V_VDT < 3)
+			Properties[%ERR] = 1
+			xS=nan;yS=Nan;zS=Nan
+		endif
 	else
 		VDTRead2/P =$possiblyquotename (thePortName)/O=2 xS, yS
-	endif
-	if (V_VDT < 2)
-		VDT2 /P=$PossiblyQuoteName (thePortName) killio
-		xS=nan;yS=Nan;zS=Nan
-		return 1
+		if (V_VDT < 2)
+			Properties[%ERR] = 1
+			xS=nan;yS=Nan;zS=Nan
+		endif
 	endif
 	// microcode returns values in mm and we want metres
-	xS /= 1e03
-	yS /= 1e03
-	LastStageX = xS
-	LastStageY = yS
-	if (hasZ)
-		zS/=1e03
-		LastStageZ = zS
-	else
-		zS = LastStageZ
+	if (Selected [%X])
+		Zeros [%X] = xS/1E03
+		DistsFromZero [%X] = 0
 	endif
-	isBusy =0
+	if (Selected [%Y])
+		Zeros [%Y] = yS/1E03
+		DistsFromZero [%Y] = 0
+	endif
+	if (Selected[%Z])
+		Zeros [%Z] = zS/1E03
+		DistsFromZero [%Z]=0
+	endif
 	return 0
 end
 
-//***********************************************************************************	
-// function to turn ON/Off bkg task that periodically (4 times per second) updates stage encoder values
-Function StageSetAuto_MicroCode2 (turnOn)
-	variable turnOn
+//*********************************************************************************************
+// Update Function gets stage positions from all axes - MicroCode2 can not get data from a single axis
+// Last Modified 2025/11/26 by Jamie Boyd
+threadsafe Function StageUpDate_MicroCode2 (thePort, Selected, DistsFromZero, Zeros, Properties)
+	string thePort
+	WAVE Selected
+	WAVE DistsFromZero
+	WAVE Zeros
+	WAVE Properties
 	
-	if (turnOn)
-		CtrlNamedBackground MicroCode2BkgUpdate proc= MicroCode2_BkgUpdate, period=15, burst=0, START
+	variable xS, yS, zS
+	vdtwrite2/P =$possiblyquotename (thePort)/O = 2 "\r"
+	if (Properties [%has_Z])
+		VDTRead2/P =$possiblyquotename (thePort)/O=2 xS, yS, zS
+		if (V_VDT < 3)
+			Properties[%ERR] = 1
+			xS=nan;yS=Nan;zS=Nan
+		endif
 	else
-		CtrlNamedBackground MicroCode2BkgUpdate, STOP
+		VDTRead2/P =$possiblyquotename (thePort)/O=2 xS, yS
+		if (V_VDT < 2)
+			Properties[%ERR] = 1
+			xS=nan;yS=Nan;zS=Nan
+		endif
 	endif
+	// microcode returns values in mm and we want metres
+	DistsFromZero[0] = (xS/1E03) - Zeros [0]
+	DistsFromZero[1] = (yS/1E03) - Zeros [1]
+	if (Properties[%has_Z])
+		DistsFromZero[2] = (zS/1E03) - Zeros [2]
+	endif
+//	print "MC2 in the house:" , DistsFromZero[1]
 end
 
-//***********************************************************************************	
-// BackGround function that periodically updates axes values
-Function MicroCode2_BkgUpdate (bks)
-	STRUCT  WMBackgroundStruct&bks
+
+//*********************************************************************************************
+// background function that updates stage positions for all axes, when not threaded
+// Last Modified 2025/11/26 by Jamie Boyd
+Function StageBkgUpdate_MicroCode2 (bks)
+	STRUCT StageBkgStruct &bks
+
+	SVAR thePort =  root:packages:MicroCode2:thePort
+	WAVE Selected = root:packages:MicroCode2:selectedForCMD
+	WAVE DistanceFromZero= root:packages:MicroCode2:DistanceFromZero
+	WAVE Zeros= root:packages:MicroCode2:AbsoluteZero
+	WAVE Properties =  root:packages:MicroCode2:properties
+	StageUpDate_MicroCode2 (thePort, Selected, DistanceFromZero, Zeros, Properties)
+	return 0
+end
+
+
+//*********************************************************************************************
+// background function that touches waves in datafolder so control panel will update when threaded
+Function StageBkgTouch_MicroCode2 (WMS)
+	STRUCT WMBackgroundStruct &WMS
 	
-	// Globals
-	NVAR isBusy = root:packages:MicroCode2:isBusy
-	if (isBusy)
-		return 0
-	else
-		variable xS, yS, zS, AxS
-		StageUpDate_MicroCode2 (xS, yS, zS, AxS)
-		return 0
-	endif
+	WAVE properties = root:packages:Null:properties
+	WAVE distsFromZero = root:packages:Null:DistanceFromZero
+	properties [%ERR] += 0
+	distsFromZero [%A] += 0
+	return 0
 end

@@ -1,192 +1,814 @@
+#pragma TextEncoding = "UTF-8"
+#pragma rtGlobals=3				// Use modern global access method and strict wave access
+#pragma DefaultTab={3,20,4}		// Set default tab width in Igor Pro 9 and later
 #pragma rtGlobals=3
-#pragma version= 5.1
-#pragma IgorVersion=7
+#pragma version= 6				// the threaded version
+#pragma IgorVersion=8.05		// need threaded version of VDT2 XOP
 #include "GUIPList"
 #include "GUIPControls"
+#include <SaveRestoreWindowCoords>
 
+// Modified: 2025/12/19 by Jamie Boyd - making threads work
+// Modified: 2025/10/29 by Jamie Boyd - using threads for reading and moving
 // Modified: 2025/07/08 by Jamie Boyd - Use new GUIPSetVar routines
 // Modified: 2025/07/07 by Jamie Boyd - removed reference to VDT and ASIUSBez
 
-
 // Designed to work with the VDT2 XOP for serial control
 
-// The idea is that the control panel that this general procedure makes works with multiple specific procedures, 
-// each targeting a different stage encoder, as long as the procedures for the stage encoder follow a few rules:
-// StageStartStage will make a packages folder named after the stage encoder procedure and populate it with:
-// 1) global string for the name of the port used by the stage encoder
-// 2) global variables for capabilities for XY, Z, and Axial movement, motorization, ability to set PID values
-// hasXY, hasZ, hasAx, hasMotor, hasPID
-// Although it is possible to use a single procedure with devices of different functionality and read the functionality after initialization,
-// StageStartStage makes the control panel before intitialization, so each procedure must set functionality with hard-coded globals
-// I recommend setting globals from  static constants, which are easily modified
-// 3) global variables for distances from zero:
-// XDistanceFromZero, YdistanceFomzero, zDistanceFromZero.
-// 4) and, for motorized devices, increments for step movements, polarity (left vs right), and whether manual movement is Locked:
-// XstepSize, YstepSize, ZstepSize, xPol, yPol, zPol, isLocked
-// 5) a variable for whether or not any of the axes are moving, which your procedure should set if it wants to return while axes are still moving
+// The idea is that the control panel that this general procedure makes works with multiple specific procedures,
+// each targeting a different stage encoder, as long as the procedures for the stage encoder implements the
+// functions in the provided template functions
 
-// Make your stage setup, update, and move functions conform to the templates below.
-// Return axes values in pass-by-reference parameters and set the global variables as well.
+// **************************** Select Threaded or Unthreaded use *********************************
+// You can choose whether the stage is run in threaded mode or not by leaving exactly one of the following two lines uncommented
+//#define STAGE_IS_THREADED
+#undef STAGE_IS_THREADED
 
+// update interval,in seconds, for background updating of position from bkgTask or thread
+CONSTANT kAUTO_UPDATE_INT = 0.3333		// 3 times a second
+
+//******************* MNEMONIC CONSTANTS FOR STAGE MOVEMENT VERIFICATION ********************************
+CONSTANT kStagesReturnNow =0	// stage function assume stage will get there, and returns immediately
+CONSTANT kStagesReturnAfter = 1	// stage function does not return until after requested position has been verified. if threaded, thread will block until verified 
+CONSTANT kStagesReturnBkg = 2	// a bkg task will be started to monitor position (unthreaded) or thread will monitor position without blocking (threaded)
+
+//******************* MNEMONIC CONSTANTS FOR axis Bits ********************************
+CONSTANT kXbit = 1
+CONSTANT kYbit = 2
+CONSTANT kZbit = 4
+CONSTANT kAbit = 8 
+
+
+// ***********************************************************************************************
+// menu items for Stages, the threaded version has an extra item to kill the thread
+// Note use of #ifdef for conditional compilation of code for threaded versus nonthreaded version. Used extensivelyin following code
+#ifdef STAGE_IS_THREADED
 Menu "Macros"
-	"Open Stage and Focus Panel",/Q,StageStart()	
+	Submenu "Stages"
+		"Open Stage and Focus Panel",/Q,StageStart()
+		"Stop Thread", /Q, StageStopThread()
+	end
 end
+#else
+Menu "Macros"
+	"Open Stage and Focus Panel",/Q,StageStart()
+end
+#endif
 
-//*******************NEMONIC CONSTANTS FOR STAGE MOVEMENTS********************************
-// When moving, function can either: assume stage will get there, and return immediately; not return until requested position has been verified; set a background task to monitor position
-CONSTANT kStagesReturnNow =0
-CONSTANT kStagesReturnLater =1
-CONSTANT kStagesReturnBkg =2
- // to pass absolute value to move to an absolute location
-CONSTANT kStagesIsAbs =0
-// to pass relative value to move in either direction
-CONSTANT kStagesIsRelNeg =-1
-CONSTANT kStagesIsRelPos =1
+// To write a procedure for a stage controller device, implement the following templates, as appropriate
+
 //****************************************************************************************************************************************************
-//*******************Templates for functions which all stage encoder procedures are expected to provide********************************
+//***************************************Templates for Initialization functions **********************************************************************
 //****************************************************************************************************************************************************
-// Template for function to set global variables for the Stage encoder. The globals will be
-// made by StageMakeGlobals procedure
-Function StageInitGlobals_Template ()
+// Template for function to set global variables for the Stage encoder.
+// The globals will be made by StageMakeGlobals procedure
+Function StageInitGlobals_Template()
 	return 0
 end
 
 //*************************************************************************************************
-// Template for function to add special controls for a particular stage encoder to a control panel
-// X and Y offset refer to point offsets to position controls on control panel
-Function StageAddControls_Template (xOffset, yOffset, thePanel)
-	variable xOffset, yOffset
-	string thePanel
-	return 0
-end
-
-//*************************************************************************************************
-//Template for Stage Setup functions
-Function StageSetUpPort_Template (thePortName)
+//Template for Stage Setup function - Stage procedure will open and initialize serial port with correct Baud and other settings
+Function StageSetUpPort_Template(thePortName)
 	string thePortName // Name of the serial port
-	return 0
 end
 
+
 //*************************************************************************************************
-//Template for Stage Close functions
-Function StageClose_Template ()
-	return 0
+//Template for Stage Close functions -  Stage procedure will close the port, do anything else it needs to do
+Function StageClose_Template(thePortName)
+	string thePortName // Name of the serial port
 end
+
+
+//**********************************************************************************************************************************
+//******************* Templates for Threadsafe functions for things that can be done from the thread *******************************
+//**********************************************************************************************************************************
+
+//*************************************************************************************************
+// Template for function to reset I/O, clearing any buffers
+Threadsafe Function StageResetIO_Template(thePortName, Properties)
+	string thePortName // Name of the serial port
+	WAVE Properties
+end
+
+
+//*************************************************************************************************
+// Template for function to set zero position, i.e., zero the stage encoders for all supported axes
+Threadsafe Function StageSetZero_Template(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
+	string thePort
+	WAVE selectedForCMD
+	WAVE DistsFromZero
+	WAVE Zeros
+	WAVE Properties
+end
+
 
 //*************************************************************************************************
 // Template for Stage Update functions - the funcref should never resolve to this template function
-Function StageUpdate_Template (xS, yS, zS, aS)
-	variable &xS, &yS, &zS,  &aS 
-	// variables that will hold the retreived absolute positions. When you pass them, have the ones you want updated as real numbers, and ones
-	// you don't want updated as NaN. Not all encoders can check for each axis independently.
-	
-	xS = Nan;yS = Nan;zS=Nan; aS = Nan
-	doAlert 0, "You do not have stage encoders configured properly."
-	return 1
+Threadsafe Function StageUpdate_Template(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
+	string thePort
+	WAVE selectedForCMD
+	WAVE DistsFromZero
+	WAVE Zeros
+	WAVE Properties
+
+	print "You do not have stage encoders configured properly."
+end
+
+
+//*************************************************************************************************
+// Template for Stage Move function that moves a step relative to current position, which stage procedures for controllable stages must provide
+// if they don't support relative movement, use DistsFromZero to translate into absolute movement
+// the funcref should never resolve to this template function
+Threadsafe Function StageMoveRel_Template(thePort, doVerify, selectedForCMD, StepSize, DistsFromZero, Properties)
+	String thePort
+	Variable doVerify		// 0 to not verify movement, just assume we do.
+	WAVE selectedForCMD
+	Wave StepSize
+	WAVE DistsFromZero
+	WAVE Properties
+
+	print "You do not have stage encoders configured properly."
+end
+
+
+//*************************************************************************************************
+// Template for Stage Move function that moves to an absolute position, which stage procedures for controllable stages must provide
+// the funcref should never resolve to this template function
+Threadsafe Function StageMoveAbs_Template(thePort, doVerify, selectedForCMD, MoveTo, DistsFromZero, Properties)
+	String thePort
+	variable doVerify
+	Wave selectedForCMD
+	WAVE MoveTo
+	WAVE DistsFromZero
+	WAVE Properties
+
+	print "You do not have stage encoders configured properly."
 end
 
 //*************************************************************************************************
-// Template for Stage Move  function, which stage procedures for controllable stages must provide
-// the funcref should never resolve to this template function
-Function StageMove_Template (moveType, returnWhen, xS, yS, zS, aS)
-	variable moveType//  0 if requesting movement to an absolute position. -1 or 1 if requesting movement relative to current location, 1 for positive movement, -1 for negative movement
-	variable returnWhen // 0 to return immediately without checking that movement finishes, 1 to wait until movement is finished to return, 2 to return immediately but set a bkg task that updates position
-	variable  &xS, &yS, &zS, &aS// variables that are non-NaN for requested axes, and will hold the retreived absolute positions
-	
-	xS = Nan;yS = Nan;zS=Nan;aS=Nan
-	doAlert 0, "You do not have stage encoders configured properly."
-	return 0
+// Template for a function that reports which axes have been moved to their target locations
+// to be used by the thread. Can also be called from the moveRel, moveAbs functions, and from background function
+// returns a bitwise combo of active axes 1=x, 2=y, 4=Z, 8=A
+Threadsafe Function StageMonitorFunc_Template(thePort, axesBits, MoveTo, DistsFromZero)
+	String thePort
+	variable axesBits	//bitwise combo of axes that need checking 1=x, 2=y, 4=Z, 8=A
+	WAVE MoveTo
+	WAVE DistsFromZero
 end
+
+
+// ************************************************************************************************************
+// Template for a special background task for use with threaded stage operation. You need to occasionally "touch"
+// the waves in the datafolder for the stage in order for the values in the control panel to be updated.
+// Adding zero to any point in the wave is an adequate way to do this
+// Not needed if you can live with the control panel being out of date
+// FYI: bringing another window to the front, then bringing the control panel to the front again will also update control panel values
+Function StageBkgTouch_Template(WMS)
+	STRUCT WMBackgroundStruct &WMS
+end
+
+
+//**********************************************************************************************************************************
+//************************* Support for background tasks when Stage is not threaded ***********************************************
+//**********************************************************************************************************************************
+
+
+// ******************************************************************************
+// Template for a function that uses a background task to continuously update axes positions, for non-threaded use,
+Function StageBkgUpdate_Template(bks)
+	STRUCT StageBkgStruct &bks
+end
+
+// ******************************************************************************
+// Template for function that uses a background task to continuously update axes positions, for non-threaded use,
+Function StageBkgMonitor_Template(bks)
+	STRUCT StageBkgStruct &bks
+end
+
+//*******************************************************************************
+// structure for background function with extra fields for monitoring positions
+// Last modified 2025/11/26 by Jamie Boyd
+STRUCTURE StageBkgStruct
+STRUCT WMBackgroundStruct WMS
+uint32 axesBits		// bitwise combo of axes to monitor, 1=X, 2=Y, 4=Z, 8=Ax
+float targets [4]	//when monitoring position, the coordinates we are approaching, X,Y,Z,A
+EndStructure
+
 
 //*********************************************************************************************************************************************************************
 //****************Templates for various functions which stage procedures may or may not provide, depending on their feature set***********************
 //*********************************************************************************************************************************************************************
-// Template for function to start/stop a bkg task to automatically update the positions
-Function StageSetAuto_Template (turnOn)
-	variable turnOn // if turnOn is non-zero, start the task, if it is zero, stop the task
-	
-	return 0
-end
+
 
 //*************************************************************************************************
-// Template for stage set increment functions for movable stages
-// If the stage encoder does not support saving increments on the encoder, they are still saved in the global variables
-Function StageSetInc_Template ([xVal, yVal, zVal, aVal])
-	variable xVal, yVal, zVal, aVal // variables for requested increment. You can set increment for one, two,  three, or four axes at a time
-	
-	return 0
+// Template for optional function to add special controls for a particular stage encoder to a control panel
+// X and Y offset refer to point offsets to position controls on control panel
+Function StageAddControls_Template(xOffset, yOffset, thePanel)
+	variable xOffset, yOffset
+	string thePanel
 end
 
-//*************************************************************************************************
-// Template for function to set zero position, i.e., zero the stage encoders for all supported axes
-// Takes no arguments and returns no value
-Function StageSetzero_Template ()
-	
-	return 0
+// *********************************************************************************************
+// Template for Setting increment for steps, used when stored on the stage encoder
+ThreadSafe Function StageSetStepIncr_Template(thePort, selectedForCMD, StepSize, Properties)
+	string thePort
+	WAVE selectedForCMD
+	WAVE StepSize
+	WAVE Properties
 end
 
-//*************************************************************************************************
-// Template for function to reset I/O, clearing any buffers
-Function StageResetIO_Template ()
-	
-	return 0
+
+// *********************************************************************************************
+// Template for Getting increment for steps, used when stored on the stage encoder
+ThreadSafe Function StageGetStepIncr_Template(thePort, selectedForCMD, StepSize, Properties)
+	string thePort
+	WAVE selectedForCMD
+	WAVE StepSize
+	WAVE Properties
 end
+
 
 //*************************************************************************************************
 // Template for function to lock joystick to stop manual movement of stage encoder
-Function StageSetManual_template (doLock)
+Threadsafe Function StageSetManual_template(thePort, doLock, Properties)
+	string thePort
 	variable doLock //1 to lock manual movement of stage, 0 to unlock
-	
-	return 0
+	WAVE Properties
 end
+
+
 
 //*************************************************************************************************
 // Template for function to add special controls for a particular stage encoder to the PID panel
 // X and Y offset refer to point offsets to position controls on control panel
-// returns the amount of extra vertical space it added
-Function StageAddPIDControls_Template (Axis, xOffset, yOffset, thePanel)
+// returns the amount of extra vertical space it added. The function needs to resize the control panel as needed
+Function StageAddPIDControls_Template(Axis, xOffset, yOffset, thePanel)
 	string Axis // X, Y, or Z will be called indepentently
 	variable xOffset, yOffset
 	string thePanel
-	
-	return 0
-end
 
-
-//*************************************************************************************************
-// Template for function to fetch PID values for a single axis
-// Set pS, iS, dS initally to 1 to fetch value for that PID, or 0 to not fetch
-Function StageFetchPID_Template (theAxis, pS, iS, dS)
-	string theAxis // X, Y, Z, or A (for axial)
-	variable &pS, &iS, &dS  // variables that will hold the retreived PID values.
-	
-	pS = Nan;iS = Nan;dS=Nan
-	doAlert 0, "You do not have stage encoders configured properly."
-	return 1
-end
-
-//*************************************************************************************************
-// Template for function to set PID values for a single axis. Set 1, 2, or 3 of the PID components at once
-Function StageSetPID_Template (theAxis, [pS, iS, dS])
-	string theAxis // X, Y, Z, or A (for axial)
-	variable pS, iS, dS  // the PID values to set
-	
-	doAlert 0, "You do not have stage encoders configured properly."
 	return 1
 end
 
 
-//****************************************************************************************************************************************************
-// Lists Stage Encoder files in user procedures folder and associated device preferences
+//*************************************************************************************************
+// Template for function to fetch PID values
+Threadsafe Function StageFetchPID_Template(thePort, SelectedForCMD, PIDget, Properties)
+	string thePort
+	WAVE SelectedForCMD
+	WAVE PIDGet
+	Wave Properties
+	print "You do not have PID functions configured properly"
+	return 1
+end
+
+//*************************************************************************************************
+// Template for function to set PID values
+Threadsafe Function StageSetPID_Template(thePort, SelectedForCMD, PIDset, Properties)
+	string thePort
+	WAVE SelectedForCMD
+	WAVE PIDset
+	WAVE Properties
+
+	return 1
+end
+
+
+// *************************************************** Functions for Stage Management ***********************************************
+// These functions are used to manage all stages. The are called from the Stage Control Panel, and can also be called from User code
+// ***************************************************************************************************************************
+
+
+//*********************************************************************************************
+// Makes globals for the chosen Stage encoder,but does not give inital values, individual stage procedure does that in its StageInitGlobals
+// Last modified 2025/11/25 by Jamie Boyd - uses waves not global variables for most configuration values
+Function StageMakeGlobals(theStageEncoder)
+	string theStageEncoder
+
+	if(!(dataFolderExists ("root:packages:" + theStageEncoder)))
+		if (!(datafolderExists ("root:packages:")))
+			newdatafolder root:packages
+		endif
+		newDataFolder/O $"root:packages:" + theStageEncoder
+	endif
+	// name of serial port
+	string/G $"root:packages:" + theStageEncoder + ":thePort"
+	// absolute Zero, for Stage encoders that do not have a zero command, we store position here
+	make/o/n=4  $"root:packages:" + theStageEncoder + ":absoluteZero"
+	WAVE absoluteZero=$"root:packages:" + theStageEncoder + ":absoluteZero"
+	absoluteZero =0
+	// distances from 0
+	make/o/n=4  $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	WAVE dist=$"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	// selected wave, used to indicate if an axis is selected for a command
+	make/o/n=4  $"root:packages:" + theStageEncoder + ":selectedForCMD"
+	WAVE selected=$"root:packages:" + theStageEncoder + ":selectedForCMD"
+	// requsted move position
+	make/o/n=4  $"root:packages:" + theStageEncoder + ":MoveTo"
+	WAVE moveTo=$"root:packages:" + theStageEncoder + ":MoveTo"
+	// step size
+	make/o/n=4  $"root:packages:" + theStageEncoder + ":StepSize"
+	WAVE StepSize=$"root:packages:" + theStageEncoder + ":StepSize"
+	// polarity - used for left, right, and up, down step buttons
+	make/o/n=4  $"root:packages:" + theStageEncoder + ":Polarity"
+	WAVE polarity=$"root:packages:" + theStageEncoder + ":Polarity"
+	setDimLabel 0, 0, X, absoluteZero, dist, StepSize, polarity, moveTo, selected
+	setDimLabel 0, 1, Y, absoluteZero, dist, StepSize, polarity, moveTo, selected
+	setDimLabel 0, 2, Z, absoluteZero, dist, StepSize, polarity, moveTo, selected
+	setDimLabel 0, 3, A, absoluteZero, dist, StepSize, polarity, moveTo, selected
+	// properties and error
+	make/o/n=21 $"root:packages:" + theStageEncoder + ":properties"
+	WAVE propWave = $"root:packages:" + theStageEncoder + ":properties"
+	propWave=0
+	propWave [9,12] = -INF		// default minimum range limits
+	propWave [13,16] = INF		// default maximum range limits
+	setDimLabel 0, 0, has_XY, propWave
+	setDimLabel 0, 1, has_Z, propWave
+	setDimLabel 0, 2, has_Ax, propWave
+	setDimLabel 0, 3, has_Mtr, propWave
+	setDimLabel 0, 4, has_PID, propWave
+	setDimLabel 0, 5, has_Lock, propWave
+	setDimLabel 0, 6, res_XY, propWave
+	setDimLabel 0, 7, res_Z, propWave
+	setDimLabel 0, 8, res_Ax, propWave
+	setDimLabel 0, 9, min_X, propWave
+	setDimLabel 0, 10, min_Y, propWave
+	setDimLabel 0, 11, min_Z, propWave
+	setDimLabel 0, 12, min_Ax, propWave
+	setDimLabel 0, 13, max_X, propWave
+	setDimLabel 0, 14, max_Y, propWave
+	setDimLabel 0, 15, max_Z, propWave
+	setDimLabel 0, 16, max_Ax, propWave
+	setDimLabel 0, 17, is_Locked, propWave
+	setDimLabel 0, 18, is_auto, propWave
+	setDimLabel 0, 19, ERR, propWave
+	setDimLabel 0, 20, BUSY, propWave
+	// PID settings (for set, get, and default)
+	make/o/n=(4,3)  $"root:packages:" + theStageEncoder + ":PIDget"
+	WAVE PIDget = $"root:packages:" + theStageEncoder + ":PIDget"
+	make/o/n=(4,3)  $"root:packages:" + theStageEncoder + ":PIDdefault"
+	WAVE PIDdefault = $"root:packages:" + theStageEncoder + ":PIDdefault"
+	setDimLabel 0, 0, X, PIDget, PIDdefault
+	setDimLabel 0, 1, Y, PIDget, PIDdefault
+	setDimLabel 0, 2, Z, PIDget, PIDdefault
+	setDimLabel 0, 3, A, PIDget, PIDdefault
+	setDimLabel 1, 0, P, PIDget, PIDdefault
+	setDimLabel 1, 1, I, PIDget, PIDdefault
+	setDimLabel 1, 2, D, PIDget, PIDdefault
+#ifdef STAGE_IS_THREADED
+	// thread group number for this stage
+	variable/G $"root:packages:" + theStageEncoder + ":stageThread"
+	variable/G $"root:packages:" + theStageEncoder + ":stageIsThreaded" = 1
+#else
+	variable/G $"root:packages:" + theStageEncoder + ":stageIsThreaded" = 0
+#endif
+end
+
+
+//*********************************************************************************************
+// Sets the global string for serial port to the selected value, and tries to initialize the stage encoder with the port
+// Last Modified 2025/12/03 by Jamie Boyd
+Function StagePortProc(theStageEncoder, thePortName)
+	String theStageEncoder
+	String thePortName
+
+	// Save port name in global string in pakages folder for this stage procedure
+	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+	thePort = thePortName
+	Funcref StageSetupPort_Template StageSetupPortFunc = $"StageSetUpPort_" + theStageEncoder
+	StageSetupPortFunc (thePort) // initilaize the encoder with the chosen port, do whatever needs to be done for this device
+	// Do an initial position update and get step increments from encoder (if encoder stores step increments)
+	WAVE DistanceFromZero= $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	WAVE Zeros= $"root:packages:" + theStageEncoder + ":AbsoluteZero"
+	WAVE StepSize = $"root:packages:" + theStageEncoder + ":StepSize"
+	WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
+	WAVE selectedForCMD=  $"root:packages:" + theStageEncoder + ":selectedForCMD"
+	selectedForCMD = 0
+	if (Properties [%has_XY])
+		selectedForCMD [%X] =1
+		selectedForCMD [%Y] =1
+	endif
+	if (Properties [%has_Z])
+		selectedForCMD [%Z] =1
+	endif
+	if (Properties [%has_Ax])
+		selectedForCMD [%A] =1
+	endif
+#ifdef STAGE_IS_THREADED
+	// start Thread running task
+	WAVE PIDget = $"root:packages:" + theStageEncoder + ":PIDget"
+	NVAR theThread = $"root:packages:" + theStageEncoder + ":stageThread"
+	variable result=ThreadGroupRelease(theThread, 0)
+	theThread = threadGroupCreate(1)
+	ThreadStart theThread, 0, StagePThread (theStageEncoder, DistanceFromZero, Zeros, StepSize, PIDget, Properties)
+	// tell thread what port to use
+	newdatafolder/s :tdata
+	variable/G theCmdG = kThreadSetPort
+	string/G thePortG = thePort
+	ThreadGroupPutDF theThread, :
+	// do an initial update
+	newdatafolder/s :tdata
+	variable/G theCmdG = kThreadGetPos
+	duplicate selectedForCMD selectedG
+	WaveClear selectedG
+	ThreadGroupPutDF theThread, :
+	// Get step increments from encoder
+	newdatafolder/s :tdata
+	variable/G theCmdG = kThreadGetMvIncr
+	duplicate selectedForCMD selectedForCMDG
+	duplicate StepSize StepSizeG
+	WAVEClear selectedForCMDG, StepSizeG
+	ThreadGroupPutDF theThread, :
+	// Start touchy background task
+	//funcref StageBkgTouch_Template toucher = $"StageBkgTouch_" +  theStageEncoder
+	string funcName="StageBkgTouch_" +  theStageEncoder
+	string taskName="touchTask_" + theStageEncoder
+	CtrlNamedBackground $taskName, proc = $funcName , period = ceil(kAUTO_UPDATE_INT * 60), burst = 0, start
+#else
+	// do initial update
+	funcref  StageUpdate_Template StageUpdate=$"StageUpdate_" + theStageEncoder
+	StageUpdate(thePort, selectedForCMD, DistanceFromZero, Zeros, Properties)
+	// Get increments
+	Funcref StageGetStepIncr_Template StageGetStepIncr = $"StageGetStepIncr_" + theStageEncoder
+	StageGetStepIncr(thePort, selectedForCMD, StepSize, Properties)
+#endif
+
+end
+
+
+// *******************************************************************************
+// Stage update procedure, updates selected axes
+// last modified: 2025/12/19 by Jamie Boyd
+Function StageUpdate(theStageEncoder, AxisBits, waitForResult)
+	String theStageEncoder
+	variable AxisBits
+	variable waitForResult
+	
+	WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
+	WAVE selected=$"root:packages:" + theStageEncoder + ":selectedForCMD"
+	selected = 0
+	if (AxisBits & kXbit)
+		selected [%X] = 1
+	endif
+	if (AxisBits & kYbit)
+		selected [%Y] = 1
+	endif
+	if (AxisBits & kZbit)
+		selected [%Z] = 1
+	endif
+	if (AxisBits & kAbit)
+		selected [%A] = 1
+	endif
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	variable/G theCmdG = kThreadGetPos
+	duplicate selected selectedG
+	WAVEClear selectedG
+	ThreadGroupPutDF threadID, :
+	if (waitForResult)  // if threaded, it will take time for result to be placed in Distance wave
+		do
+			sleep/S 0.05
+		while (Properties [%BUSY])
+	endif
+#else
+	SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
+	WAVE DistanceFromZero= $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	WAVE Zeros= $"root:packages:" + theStageEncoder + ":AbsoluteZero"
+	funcref  StageUpdate_Template StageUpdate=$"StageUpdate_" + theStageEncoder
+	StageUpdate(thePort, Selected, DistanceFromZero, Zeros, Properties)
+#endif
+end
+
+// *******************************************************************************
+// Gets axis position by reading from global wave in data folder
+// last modified: 2025/12/19 by Jamie Boyd
+Function StageGetAxisPos (theStageEncoder, AxisStr)
+	string theStageEncoder
+	String AxisStr // one of X,Y,Z,A
+	
+	WAVE DistanceFromZero= $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	return DistanceFromZero[%$AxisStr]
+end
+	
+// *******************************************************************************
+// Turns auto-updating of position on or off
+// last modified: 2025/12/19 by Jamie Boyd
+Function StageSetAuto(theStageEncoder, autoIsOn)
+	string theStageEncoder
+	variable autoIsOn
+	
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	if (autoIsOn)
+		variable/G theCmdG = kThreadSetAuto
+	else
+		variable/G theCmdG = kThreadUnSetAuto
+	endif
+	ThreadGroupPutDF threadID, :
+#else
+	string procName = "StageBkgUpdate_" + theStageEncoder
+	string bkgName= "BkgUpdate_" + theStageEncoder
+	if (autoIsOn)
+		CtrlNamedBackground $bkgName, proc = $procName, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
+	else
+		CtrlNamedBackground $bkgName, stop
+	endif
+#endif
+end
+
+// *******************************************************************************
+// Zeros the selected axes
+// last modified: 2025/12/19 by Jamie Boyd
+Function StageSetZero(theStageEncoder, axesBits, waitForResult)
+	string theStageEncoder
+	variable axesBits
+	variable waitForResult
+	
+	WAVE selected =  $"root:packages:" + theStageEncoder + ":selectedForCMD"
+	selected = 0
+	if (axesBits & kXbit)
+		selected [%X] = 1
+	endif
+	if (axesBits & kYbit)
+		selected [%Y] = 1
+	endif
+	if (axesBits & kZbit)
+		selected [%Z] = 1
+	endif
+	if (axesBits & kAbit)
+		selected [%A] = 1
+	endif
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	variable/G theCmdG = kThreadSetZero
+	duplicate selected selectedG
+	WAVEClear selectedG
+	ThreadGroupPutDF threadID, :
+	if (waitForResult)  // if threaded, it will take time for result to be placed in Distance wave
+		do
+			sleep/S 0.05
+		while (Properties [%BUSY])
+	endif
+#else
+	SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
+	WAVE DistanceFromZero= $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	WAVE Zeros= $"root:packages:" + theStageEncoder + ":AbsoluteZero"
+	WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
+	funcref StageSetzero_Template SetZeroProc=$"StageSetzero_" + theStageEncoder
+	SetZeroProc (thePort, selected, DistanceFromZero, Zeros, Properties)
+#endif
+end
+
+// *******************************************************************************
+// Clears any pending I/O on the serial port used for the device, in case there any errors
+// last modified: 2025/12/19 by Jamie Boyd
+Function StageResetIO(theStageEncoder)
+	string theStageEncoder
+	
+	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	variable/G theCmdG = kThreadResetIO
+	ThreadGroupPutDF threadID, :
+#else
+	WAVE properties= $"root:packages:" + theStageEncoder + ":Properties"
+	funcref StageResetIO_Template ResetIO = $"StageResetIO_" + theStageEncoder
+	ResetIO (thePort, properties)
+#endif
+end
+
+// *******************************************************************************
+// enables or disables manual movemet of stage with joystick
+// last modified: 2025/12/19 by Jamie Boyd
+Function StageSetManual(theStageEncoder, setLock)
+	string theStageEncoder
+	variable setLock
+	
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	if (setLock)
+		variable/G theCmdG = kThreadSetLock
+	else
+		variable/G theCmdG = kThreadUnSetLock
+	endif
+	ThreadGroupPutDF threadID, :
+#else
+	SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
+	WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
+	funcref StageSetManual_template SetManualProc=$"StageSetManual_" + theStageEncoder
+	SetManualProc (thePort, setLock, Properties)
+#endif
+end
+
+// *******************************************************************************
+// 
+function StageSetIncrement (theStageEncoder, AxisStr, Increment, doWait)
+	string theStageEncoder
+	string AxisStr
+	variable increment
+	variable doWait
+	
+	WAVE selected = $"root:packages:" + theStageEncoder + ":selectedForCMD"
+	WAVE StepSize = $"root:packages:" + theStageEncoder + ":stepSize"
+	selected = 0
+	selected [%$AxisStr] = 1
+	StepSize [%$AxisStr] = Increment
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	variable/G theCmdG = kThreadSetMvIncr
+	duplicate selected selectedG
+	WAVEClear selectedG
+	duplicate stepSize, stepSizeG
+	WAVEClear stepSizeG
+	ThreadGroupPutDF threadID, :
+	if (waitForResult)  // if threaded, it will take time for result to be placed in Distance wave
+		do
+			sleep/S 0.05
+		while (Properties [%BUSY])
+	endif
+#else
+	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+	WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
+	funcRef StageSetStepIncr_Template StageSetInc = $"StageSetStepIncr" + theStageEncoder
+	StageSetInc (thePort, selected, StepSize, Properties)
+#endif
+end
+
+// *******************************************************************************
+// 
+function StageGetIncrement (theStageEncoder, AxisBits, Increment, doWait)
+	string theStageEncoder
+	variable axisBits
+	variable increment
+	variable doWait
+	
+	WAVE selected = $"root:packages:" + theStageEncoder + ":selectedForCMD"
+	selected = 0
+	if (AxisBits & kXbit)
+		selected [%X] = 1
+	endif
+	if (AxisBits & kYbit)
+		selected [%Y] = 1
+	endif
+	if (AxisBits & kZbit)
+		selected [%Z] = 1
+	endif
+	if (AxisBits & kAbit)
+		selected [%A] = 1
+	endif
+	
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	variable/G theCmdG = kThreadGetMvIncr
+	duplicate selected selectedG
+	WAVEClear selectedG
+	ThreadGroupPutDF threadID, :
+	if (waitForResult)  // if threaded, it will take time for result to be placed in Distance wave
+		do
+			sleep/S 0.05
+		while (Properties [%BUSY])
+	endif
+#else
+	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+	WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
+	WAVE StepSize = $"root:packages:" + theStageEncoder + ":stepSize"
+	funcRef StageGetStepIncr_Template StageSetInc = $"StageSetStepIncr" + theStageEncoder
+	StageSetInc (thePort, selected, StepSize, Properties)
+#endif
+end
+
+
+// *******************************************************************************
+// 
+Function StageStep (theStageEncoder, theAxis, Direction, returnWhen)
+	String theStageEncoder
+	String theAxis
+	variable Direction // must be 1 or -1
+	variable returnWhen
+	// set selected axis in selected wave and set polarity
+	WAVE Selected =  $"root:packages:" + theStageEncoder + ":selectedForCMD"
+	WAVE Polarity = $"root:packages:" + theStageEncoder + ":Polarity"
+	Selected = 0
+	selected [%$theAxis] = Polarity[%$theAxis] * Direction		
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	variable/G returnWhenG = returnWhen
+	variable/G theCmdG = kThreadDoStep
+	duplicate selected selectedG
+	WaveClear selectedG
+	ThreadGroupPutDF threadID, :
+#else
+	funcRef StageMoveRel_Template StageMoveRel = $"StageMoveRel_" + theStageEncoder
+	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+	WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
+	WAVE StepSize = $"root:packages:" + theStageEncoder + ":stepSize"
+	WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	StageMoveRel (thePort, returnWhen, Selected, StepSize, DistsFromZero, Properties)
+	if (returnWhen == kStagesReturnBkg)
+		string procName = "StageBkgMonitor_" + theStageEncoder
+		string bkgName= "BkgMonitor_" + theStageEncoder
+		CtrlNamedBackground $bkgName, proc = $procName, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
+	endif
+#endif
+end
+
+
+Function StagesSetAbs (theStageEncoder, axisBits, moveToWave, returnWhen)
+	string theStageEncoder
+	variable axisBits
+	WAVE moveToWave
+	variable returnWhen
+	
+	// selected
+	WAVE selected = $"root:packages:" + theStageEncoder + ":selectedForCMD"
+	selected =0
+	if (axisBits & kXbit)
+		selected [%X] =1
+	endif
+	if (axisBits & kYbit)
+		selected [%Y] =1
+	endif
+	if (axisBits & kZbit)
+		selected [%Z] =1
+	endif
+	if (axisBits & kAbit)
+		selected [%A] =1
+	endif
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	variable/G returnWhenG = returnWhen
+	variable/G theCmdG = kThreadGoToPos
+	duplicate selected selectedG
+	duplicate moveToWave moveToG
+	WaveClear selectedG ,moveToG
+	ThreadGroupPutDF threadID, :
+#else
+	funcref StageMoveAbs_Template StageMoveAbs = $"StageMoveAbs_" + theStageEncoder
+	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+	WAVE Properties =  $"root:packages:" + theStageEncoder + ":Properties"
+	WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	StageMoveAbs (thePort,returnWhen, selected, moveToWave, DistsFromZero, Properties)
+	if (returnWhen == kStagesReturnBkg)
+		string procName = "StageBkgMonitor_" + theStageEncoder
+		string bkgName= "BkgMonitor_" + theStageEncoder
+		CtrlNamedBackground $bkgName, proc = $procName, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
+	endif
+#endif
+end
+
+
+Function StagesSetAbsAxis (theStageEncoder, anAxis, moveToPos, returnWhen)
+	string theStageEncoder
+	string anAxis
+	variable moveToPos
+	variable returnWhen
+	
+	variable AxisBits
+	strswitch (anAxis)
+		case "X":
+			AxisBits = kXbit
+			break
+		case "Y":
+			AxisBits = kYbit
+			break	
+		case "Z":
+			AxisBits = kZbit
+			break
+		case "A":
+			AxisBits = kAbit
+			break	
+	endSwitch
+	make/FREE/n=4 moveTo
+	moveTo[%$anAxis] = moveToPos
+	StagesSetAbs (theStageEncoder, axisBits, moveTo, returnWhen)
+end
+
+
+// ***************************************************************************************************
+// ************* Interface code for making and running the Stage Control panel ***********************
+// ***************************************************************************************************
+
+//*******************************************************************************************************
+// Lists Stage Encoder files in user procedures folder
 // Last Modified 2016/10/13 by Jamie Boyd - Added listing of shortcuts that look like stage encoders
 function/S StageListEncoders ()
-	
+
 	PathInfo Stages
-	if (V_Flag == 0) 
+	if (V_Flag == 0)
 		NewPath/q/O Stages,SpecialDirPath("Igor Pro User Files", 0, 0, 0 ) + "User Procedures:Stages:"
 	endif
 	PathInfo StagesPrefs
-	if (V_Flag == 0) 
+	if (V_Flag == 0)
 		NewPath/C/Q/O StagesPrefs SpecialDirPath("Preferences" , 0, 0, 0) + "Stages"
 	endif
 	string emptyFolderStr =  "\\M1(No Stage encoder procedures found."
@@ -205,7 +827,7 @@ function/S StageListEncoders ()
 		lastPnt = strlen (aFile) -1
 		if ((cmpstr (aFile[lastPnt-5, lastPnt],  "_Stage")) != 0)
 			continue
-		endif		
+		endif
 		aStage = aFile[0, lastPnt-6]
 		procList += aStage + ";"
 	endfor
@@ -232,318 +854,212 @@ Function/S StageStart()
 end
 
 //****************************************************************************************************************************************************
-// Makes a panel for a given stage encoder, with customizations for the encoder
-// Last modified 2025/07/02 by Jamie Boyd - removed reference to ASIUSBez
+// Makes a panel for a given stage encoder, with customizations for the encoder, makes globals, and starts thread
+// Last Modified 2025/11/26 by Jamie Boyd, moved variablesinto waves that can be shared with the thread
 Function StageStartStage(theStageEncoder, [thePort])
 	String theStageEncoder
 	String thePort
-	
+
 	//If panel exists, bring it to the front and exit
 	Dowindow/F $theStageEncoder + "_Controls"
 	if (V_Flag ==1)
 		return 0
 	endif
-	// Check for packages folder and Stages folder 
-	if (!(DataFolderExists ("root:packages:Stages")))
-		if (!(datafolderExists ("root:packages:")))
-			newdatafolder root:packages
-		endif
-		// Save current data folder
-		string savedfolderStr = getdatafolder (1)
-		// packages folder for Stages
-		NewDataFolder/O/S root:packages:Stages
-		setdataFolder $savedfolderStr
-		doUpdate
-	endif
-	// Make global variables folder for this stage encoder
+	// Make global variables folder for this stage encoder - also starts thread and saves thread name in a global variable
 	StageMakeGlobals (theStageEncoder)
 	// Load the procedure, if not already loaded, and execute the Stage Panel function
 	if (exists ("StageSetUpPort_" + theStageEncoder) == 6) // procedure is already loaded
 		FUNCREF StageInitGlobals_Template StageInitGlobals= $"StageInitGlobals_" + theStageEncoder
 		StageInitGlobals ()
-		StageMakePanel (theStageEncoder) 
+		StageMakePanel (theStageEncoder)
 	else // need to load and compile procedures first
 		Execute/P/Q "INSERTINCLUDE \"" + theStageEncoder + "_Stage\""  //e.g., MS2000_Stage.ipf
 		Execute/P/Q "COMPILEPROCEDURES "
 		Execute/P/Q "StageInitGlobals_" + theStageEncoder + "()"
-		Execute/P/Q "StageMakePanel(\"" + theStageEncoder + "\")" 
+		Execute/P/Q "StageMakePanel(\"" + theStageEncoder + "\")"
 	endif
 	if (!(ParamIsDefault(thePort )))
-		Execute/P/Q "StagePortProc(\"" + theStageEncoder + "\", \"" + thePort +  "\")" 
-	   endif
-end
-
-
-//*********************************************************************************************
-// Makes globals for the chosen Stage encoder
-// Last Modified 2015/04/12 by Jamie Boyd
-Function StageMakeGlobals (theStageEncoder)
-	string theStageEncoder
-	
-	if(!(dataFolderExists ("root:packages:" + theStageEncoder)))
-		if (!(datafolderExists ("root:packages:")))
-			newdatafolder root:packages
-		endif
-		newDataFolder $"root:packages:" + theStageEncoder
-		// name of serial port
-		string/G $"root:packages:" + theStageEncoder + ":thePort"
-		// distances from 0
-		variable/G  $"root:packages:" + theStageEncoder + ":xDistanceFromZero"
-		variable/G  $"root:packages:" + theStageEncoder + ":yDistanceFromZero"
-		variable/G  $"root:packages:" + theStageEncoder + ":zDistanceFromZero"
-		variable/G  $"root:packages:" + theStageEncoder + ":aDistanceFromZero"
-		// Min and maximum allowable travel
-		variable/G $"root:packages:" + theStageEncoder + ":xyMIN" = -50e-03
-		variable/G $"root:packages:" + theStageEncoder + ":xyMAX" = 50e-03
-		variable/G $"root:packages:" + theStageEncoder + ":zMIN" = -5e-03
-		variable/G $"root:packages:" + theStageEncoder + ":zMAX" = 5e03
-		variable/G $"root:packages:" + theStageEncoder + ":aMIN" = -5e-03
-		variable/G $"root:packages:" + theStageEncoder + ":aMAX" = 5e03
-		// Step sizes
-		variable/G $"root:packages:" + theStageEncoder + ":xStepSize"
-		variable/G $"root:packages:" + theStageEncoder + ":yStepSize"
-		variable/G $"root:packages:" + theStageEncoder + ":zStepSize"
-		variable/G $"root:packages:" + theStageEncoder + ":aStepSize"
-		// Polarity
-		variable/G $"root:packages:" + theStageEncoder + ":xPol" 
-		variable/G $"root:packages:" + theStageEncoder + ":yPol"
-		variable/G $"root:packages:" + theStageEncoder + ":zPol"
-		variable/G $"root:packages:" + theStageEncoder + ":aPol"
-		// resolutions (minimum possible step)
-		variable/G $"root:packages:" + theStageEncoder + ":xyRes"
-		variable/G $"root:packages:" + theStageEncoder + ":zRes"
-		variable/G $"root:packages:" + theStageEncoder + ":aRes"
-		// capabilities
-		variable/G $"root:packages:" + theStageEncoder + ":hasLock"
-		variable/G $"root:packages:" + theStageEncoder + ":isLocked"
-		variable/G $"root:packages:" + theStageEncoder + ":hasXY"
-		variable/G $"root:packages:" + theStageEncoder + ":hasZ"
-		variable/G $"root:packages:" + theStageEncoder + ":hasAx"
-		variable/G $"root:packages:" + theStageEncoder + ":hasMotor"
-		variable/G $"root:packages:" + theStageEncoder + ":hasAuto"
-		variable/G $"root:packages:" + theStageEncoder + ":autoON"
-		variable/G $"root:packages:" + theStageEncoder + ":hasPID"
-		// PID settings
-		variable/G $"root:packages:" + theStageEncoder + ":xPIDp"
-		variable/G $"root:packages:" + theStageEncoder + ":xPIDi"
-		variable/G $"root:packages:" + theStageEncoder + ":xPIDd"
-		variable/G $"root:packages:" + theStageEncoder + ":yPIDp"
-		variable/G $"root:packages:" + theStageEncoder + ":yPIDi"
-		variable/G $"root:packages:" + theStageEncoder + ":yPIDd"
-		variable/G $"root:packages:" + theStageEncoder + ":zPIDp"
-		variable/G $"root:packages:" + theStageEncoder + ":zPIDi"
-		variable/G $"root:packages:" + theStageEncoder + ":zPIDd"
-		variable/G $"root:packages:" + theStageEncoder + ":aPIDp"
-		variable/G $"root:packages:" + theStageEncoder + ":aPIDi"
-		variable/G $"root:packages:" + theStageEncoder + ":xPIDpDef"
-		variable/G $"root:packages:" + theStageEncoder + ":xPIDiDef"
-		variable/G $"root:packages:" + theStageEncoder + ":xPIDdDef"
-		variable/G $"root:packages:" + theStageEncoder + ":yPIDpDef"
-		variable/G $"root:packages:" + theStageEncoder + ":yPIDiDef"
-		variable/G $"root:packages:" + theStageEncoder + ":yPIDdDef"
-		variable/G $"root:packages:" + theStageEncoder + ":zPIDpDef"
-		variable/G $"root:packages:" + theStageEncoder + ":zPIDiDef"
-		variable/G $"root:packages:" + theStageEncoder + ":zPIDdDef"
-		variable/G $"root:packages:" + theStageEncoder + ":aPIDpDef"
-		variable/G $"root:packages:" + theStageEncoder + ":aPIDiDef"
-		variable/G $"root:packages:" + theStageEncoder + ":aPIDdDef"
-		// for showing activity status
-		variable/G $"root:packages:" + theStageEncoder + ":isBusy"
+		Execute/P/Q "StagePortProc(\"" + theStageEncoder + "\", \"" + thePort +  "\")"
 	endif
 end
+
 
 //*********************************************************************************************
 //Returns a list of available serial ports for use with stage encoders using VDTGetPortList2
-// Last Modified 2015/04/12 by Jamie Boyd
+// Last Modified 2025/11/28 by Jamie Boyd
 Function/S StageListPorts ()
 	string returnStr=""
-	if (strlen(ListMatch(IgorINfo (10), "VDT2*")) > 2)
-		execute "VDTGetPortList2" // Use "Execute" so procedure will compile with VDT2 or VDT2-64 xop or neither
-	endif
-	
-	SVAR/Z S_VDT = :S_VDT
-	if (SVAR_EXISTS (S_VDT))
-		returnStr = S_VDT
-	endif
-	return returnStr  
+	VDTGetPortList2/SCAN
+	return S_VDT
 end
+
 
 //*******************************************************************************
 // Opens a control panel for common stage related functions
 // Has controls for both reading and setting stage coordinates
-// Last modified 2025/07/08 by Jamie Boyd - use new GUIPSIsetVarEnable function
-Function StageMakePanel (theStageEncoder) 
+// Last modified 2025/11/26 by Jamie Boyd - uses waves instead of variables
+// modified 2025/07/08 by Jamie Boyd - use new GUIPSIsetVarEnable function
+Function StageMakePanel (theStageEncoder)
 	string theStageEncoder
-	
+
 	//If panel exists, bring it to the front and exit
 	Dowindow/F $theStageEncoder + "_Controls"
 	if (V_Flag ==1)
 		return 0
 	endif
-	// Go to the folder, for ease of programming
-	string savedFolder = getdatafolder (1)
-	setdatafolder  $"root:packages:" + theStageEncoder
-	// Reference the globals for capabilities
-	NVAR hasXY
-	NVAR hasZ
-	NVAR hasAx
-	NVAR hasMotor
-	NVAR hasLock
-	NVAR hasAuto
-	NVAR hasPID
-	SVAR thePort
-	// How wide do we need to make the panel? 
-	variable nAxes = 2*hasXY + hasZ + hasAx
-	variable panelW = 159 + nAxes * 140
-	NewPanel /K=1 /W=(2,44, (2 + panelW), 198) as "Stage/Focus Controls-" + theStageEncoder
+	variable optionsBoxWidth = 159
+	variable AxisBoxWidth = 152
+	variable BoxHeight = 152
+	// Reference the string for port name and the wave for properties
+	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+	WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
+	WAVE distanceFromZero =$"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	WAVE StepSize = $"root:packages:" + theStageEncoder + ":stepSize"
+	WAVE moveTo = $"root:packages:" + theStageEncoder + ":MoveTo"
+	// How wide do we need to make the panel?
+	variable nAxes = 2*Properties[%has_XY] + Properties[%has_Z] + Properties[%has_Ax]
+	variable panelW = optionsBoxWidth + nAxes * AxisBoxWidth
+	NewPanel /K=1 /W=(2, 44, (2 + panelW), 198) as "Stage/Focus Controls-" + theStageEncoder
 	DoWindow/C $theStageEncoder + "_Controls"
 	modifypanel fixedsize = 1
 	// Options are always at left, followed by boxes for varying numbers of axes
-	GroupBox OptionsGrp,pos={1,2},size={158,153},title="Options",fSize=16,fStyle=1
-	// Set zero
-	Button StageSetzeroButton,pos={6,28},size={62,20},proc=StageSetzeroProc,title="Set zero"
-	Button StageSetzeroButton,help={"Sets all of the axes position values to 0."}
+	GroupBox OptionsGrp,pos={1,2},size={optionsBoxWidth,BoxHeight},title="Options",fSize=16,fStyle=1
 	// Update position values
-	Button UpdateButton,pos={71,28},size={46,20},proc=StageUpdateButtonProc,title="Update "
+	Button UpdateButton,pos={4.00,24.00},size={56.00,24.00},proc=StageUpdateButtonProc
+	Button UpdateButton,title="Update",fSize=14
 	Button UpdateButton,help={"Gets the current position values for all axes."}
 	// Auto update position Values in a bkg task
-	if (hasAuto)
-		NVAR autoON
-		CheckBox autoCheck,pos={117,31},size={40,14},proc=StageAutoCheckProc,title="Auto"
-		CheckBox autoCheck variable=autoON
-		CheckBox autoCheck,value= 0,help={"Starts/Stops a background task to automatically update positions."}
-	endif
-	// Open PID Panel
-	if (hasPID)
-		Button PIDButton,pos={132,74},size={26,20},proc=StagePIDButtonProc,title="PID"
-		Button PIDButton,help={"Opens a panel where proportional-integral-derivative settings for this encoder can be adjusted. Use at your own risk."}
-	endif
-	// Reset IO for serial - 
-	Button ResetIOButton,pos={6,50},size={65,20},proc=StageResetIOProc,title="Clear buffer"
-	Button ResetIOButton,help={"Clears spurious characters that may be remaining in the serial port input/output buffer."}
-	// Toggle maual
-	if ((hasMotor) && (hasLock))
-		NVAR isLocked
-		CheckBox ManualToggleCheck,pos={74,53},size={80,14},proc=StageSetManualCheckProc,title="Manual Lock"
-		CheckBox ManualToggleCheck,variable= isLocked
-		CheckBox ManualToggleCheck, help = {"Inactivates manual, but not computer controlled, movement on all axes."}
-	endif
+	CheckBox autoCheck,pos={62,28},size={42,15},proc=StageAutoCheckProc,title="Auto"
+	CheckBox autoCheck, wave= properties[%is_auto]
+	CheckBox autoCheck,value= 0,help={"Starts/Stops a background task (or thread) to automatically update positions."}
+	// Set zero
+	Button StageSetzeroButton,pos={115,24},size={40,20},proc=StageSetzeroButtonProc,title="Zero"
+	Button StageSetzeroButton,help={"Sets current position as 0 reference position for all of the axes."}
 	// Popup and titlebox for serial port
 	string portList = ""
-	PopupMenu thePortPopup pos={6,72},size={59,21}, mode=0, proc=Stages_PortPopMenuProc
-	TitleBox thePortTitle, pos={81,72}, size={38,21}, variable = thePort
+	PopupMenu thePortPopup pos={4,54},size={59,21}, mode=0, proc=Stages_PortPopMenuProc
+	TitleBox thePortTitle, pos={53,56}, size={38,21}, variable = thePort
 	PopupMenu thePortPopup, value= #"stageListPorts()",  title="Port:", help = {"Choose a serial port to use with this stage encoder."}
 	TitleBox thePortTitle help = {"Shows the serial port used by this stage encoder."}
 	portList =StageListPorts ()
-	// Activity indicator for this stage encoder, have to use execute to make dependency formula
-	ValDisplay isBusyValDisp,pos={6,133},size={56,18},title="Activity", help = {"\"Glows\" orange when stage is active."}
-	ValDisplay isBusyValDisp,limits={-1,1,0},barmisc={0,0},mode= 1,highColor= (65280,21760,0),lowColor= (56576,56576,56576)
-	string commandStr = "ValDisplay isBusyValDisp value=root:packages:" + theStageEncoder + ":isBusy"
+	// Clear serial buffer button
+	Button ResetIOButton,pos={99.00,53.00},size={56.00,20.00},proc=StageResetIOButtonProc,title="Clear Buf"
+	Button ResetIOButton,help={"Clears spurious characters that may be remaining in the serial port input/output buffer."}
+	// Toggle maual
+	if ((Properties[%has_Mtr]) && (Properties[%has_Lock]))
+		CheckBox ManualToggleCheck,pos={5,80},size={84,15},proc=StageSetManualCheckProc,title="Manual Lock"
+		CheckBox ManualToggleCheck,wave= Properties[%is_Locked]
+		CheckBox ManualToggleCheck, help = {"Inactivates manual, but not computer controlled, movement on all axes."}
+	endif
+	// Open PID Panel
+	if (Properties[%has_PID])
+		Button PIDButton,pos={105.00,76.00},size={48.00,20.00},proc=StagePIDButtonProc ,title="Set PID"
+		Button PIDButton,help={"Opens a panel where proportional-integral-derivative settings for this encoder can be adjusted. Use at your own risk."}
+	endif
+	// Error indicator for this stage encoder, have to use execute to make dependency formula
+	ValDisplay hasErrValDisp,pos={6,133},size={48,18},title="error", help = {"\"Glows\" orange when stage has an error, usually serial port error."}
+	ValDisplay hasErrValDisp,limits={-1,1,0},barmisc={0,0},mode= 1,highColor= (65280,21760,0),lowColor= (56576,56576,56576)
+	string pathstr= "root:packages:" + theStageEncoder + ":properties[%ERR]"
+	string commandStr = "ValDisplay hasErrValDisp value=" + pathstr
 	execute commandStr
 	// button to save a formatted string containing positions
 	Button SavePosButton,pos={63,130},size={48,20},proc=StageSavePosButtonProc,title="Sv Pos"
 	Button SavePosButton, help = {"Opens a dialog to save current stage position for later recall."}
-	if (hasMotor)
-		PopupMenu StageGoToPopMenu,pos={112,130},size={39,21},proc=StageGoToSavedPopMenuProc,title="Go"
+	if (Properties[%has_Mtr])
+		PopupMenu StageGoToPopMenu,pos={114,130},size={39,21},proc=StageGoToSavedPopMenuProc,title="Go"
 		PopupMenu StageGoToPopMenu,help={"Sends the stage to the selcted saved position."}
 		PopupMenu StageGoToPopMenu,mode=0,value=# "StageListSavedPos() + \"\\\\M1(-;Edit Position Wave\""
 	endif
 	//Add axes as required: all controls are placed with x-position relative to an offset
-	variable xOffset=159
+	variable xOffset = optionsBoxWidth
 	// first comes XY Stage
-	if (hasXY)
-		NVAR xStepSize
-		NVAR yStepSize
-		NVAR xyMIN
-		NVAR xyMAX
-		NVAR xyRes
-		GroupBox StageGroup,pos={(xOffset),2},size={278,153},title="Stage/XY",fSize=16,fStyle=1
-		if (hasMotor)
-			Button StageXYGoToZeroButton,pos={(xOffset + 87),126},size={74,21},proc=StageGoToZeroProc,title="Go to Zero"
+	if (Properties[%has_XY])
+		GroupBox StageXYGroup,pos={(xOffset),2},size={(2*AxisBoxWidth),boxHeight},title="Stage/XY",fSize=16,frame=1,fStyle=1
+		// X Position
+		TitleBox XTitle,pos={(xOffset + 4),20},size={15,24},title="X",fSize=20,frame=0,fStyle=1
+		SetVariable XDistanceSetVar,pos={(xOffset+20),24.00},size={121.00,22.00}
+		SetVariable XDistanceSetVar,title="Pos",value=DistanceFromZero[%X],fSize=14, noedit=1
+		GUIPSIsetVarEnable ("", "XDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
+		// Y Position
+		TitleBox YTitle,pos={(xOffset + 144),20.00},size={12.00,28.00},title="Y",fSize=20, frame=0,fStyle=1
+		SetVariable YDistanceSetVar, pos={(xOffset + 159),24.00},size={114.00,22.00}
+		SetVariable YDistanceSetVar,title="Pos",value=DistanceFromZero[%Y],fSize=14, noedit=1
+		GUIPSIsetVarEnable ("", "YDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
+		if (Properties[%has_Mtr])
+			// X steps
+			Button XrightStepButton,pos={(xOffset + 33),50.00},size={88.00,20.00},proc=StageStepButtonProc
+			Button XrightStepButton,title="Right 1 Step"
+			Button XleftStepButton,pos={(xOffset + 33),73.00},size={88.00,20.00},proc=StageStepButtonProc
+			Button XleftStepButton,title="Left 1 step"
+			// X step size setvar
+			SetVariable XstepSizeSetvar,pos={(xOffset + 2),97.00},size={134.00,18.00},title="Step Size",value=StepSize[%X],fSize=12
+			GUIPSIsetVarEnable ("", "XstepSizeSetvar", "StageSetIncSetvarProc", Properties[%res_XY], INF, Properties[%res_XY], 1, Properties[%res_XY], 2, "m")
+			// Y steps
+			Button YForwardStepButton,pos={(xOffset + 169),50.00},size={88.00,20.00},proc=StageStepButtonProc
+			Button YForwardStepButton,title="Forward 1 Step"
+			Button YBackStepButton,pos={(xOffset + 169),73.00},size={88.00,20.00},proc=StageStepButtonProc
+			Button YBackStepButton,title="Back 1 Step"
+			// Y step size setvar
+			SetVariable YstepSizeSetvar,pos={(xOffset + 143),97.00},size={134.00,18.00},title="Step Size",value=StepSize[%Y],fSize=12
+			GUIPSIsetVarEnable ("", "YstepSizeSetvar", "StageSetIncSetvarProc", Properties[%res_XY], INF, Properties[%res_XY], 1, Properties[%res_XY], 2, "m")
+			// XY go to
+			Button XYGoToButton,pos={(xOffset + 2), 129.00},size={39.00,20.00},proc=StagesSetAbsButtonProc,title="Go To"
+			SetVariable XGoToSetVar,pos={(xOffset + 46),130.00},size={106.00,18.00},fSize=12, value=moveTo[%X]
+			GUIPSIsetVarEnable ("", "XGoToSetVar", "", Properties[%min_X], Properties[%max_X], 0, 0, 0, 3, "m")
+			SetVariable YGoToSetVar,pos={(xOffset + 160),130.00},size={114.00,18.00}, fSize=12,value=moveTo[%Y]
+			GUIPSIsetVarEnable ("", "YGoToSetVar", "", Properties[%min_Y], Properties[%max_Y], 0, 0, 0, 3, "m")
 		endif
-		// X
-		TitleBox XTitle,pos={(xOffset + 8),36},size={15,24},title="X",fSize=20,frame=0,fStyle=1
-		SetVariable XDistanceSetVar,pos={(xOffset + 4),101},size={134,16}, title="From zero", fSize=12
-		SetVariable XDistanceSetVar,value= $"root:Packages:" + theStageEncoder + ":XDistanceFromZero"
-		if (hasMotor) // enable moving by setvar function, and add buttons and stepsize setvariable 
-			GUIPSIsetVarEnable ("", "XDistanceSetVar", "StageSetDistanceProc", xyMin, xyMax, 0, 0, 0, 2, "m")
-			Button XleftStepButton,pos={(xOffset + 33),28},size={88,20},proc=StageStepButtonProc,title="Left 1 step"
-			Button XrightStepButton,pos={(xOffset + 33),51},size={88,20},proc=StageStepButtonProc,title="Right 1 Step"
-			SetVariable XstepSizeSetvar,pos={(xOffset + 4),80},size={134,16},title="Step Size", fSize=12
-			SetVariable XstepSizeSetvar value= $"root:Packages:" + theStageEncoder  + ":xStepSize"
-			GUIPSIsetVarEnable ("", "XstepSizeSetvar", "StageSetIncProc", xyRes, (xyMax-xyMin)/10, 1e-6, 1, xyRes, 2, "m")
-		else // no motor -  no editing of position set var, no buttons or step size editing
-			SetVariable XDistanceSetVar, noedit=1, limits={-INF, inf, 0}, format="%.2W0Pm"
-		endif
-		xOffset += 136
-		// Y
-		TitleBox YTitle,pos={(xOffset + 8),36},size={15,24},title="Y",fSize=20,frame=0,fStyle=1
-		SetVariable YDistanceSetVar,pos={(xOffset + 4),101},size={134,16},title="From zero", fSize=12
-		SetVariable YDistanceSetVar value= $"root:Packages:" + theStageEncoder + ":YDistanceFromZero"
-		if (hasMotor)
-			GUIPSIsetVarEnable ("", "YDistanceSetVar", "StageSetDistanceProc", xyMin, xyMax, 0, 0, 0, 2, "m")
-			Button YForwardStepButton,pos={(xOffset + 33),28},size={88,20},proc=StageStepButtonProc,title="Forward 1 Step"
-			Button YBackStepButton,pos={(xOffset + 33),51},size={88,20},proc=StageStepButtonProc,title="Back 1 Step"
-			SetVariable YStepSizeSetVar,pos={(xOffset + 4),80},size={134,16},title="Step Size", fSize=12
-			SetVariable YStepSizeSetVar,value= $"root:Packages:" + theStageEncoder + ":YstepSize"
-			GUIPSIsetVarEnable ("", "YstepSizeSetvar", "StageSetIncProc", xyRes, (xyMax-xyMin)/10, 1e-6, 1, xyRes, 2, "m")
-		else
-			SetVariable YDistanceSetVar, noedit =1, limits={-INF, INF, 0}, format="%.2W0Pm"
-		endif
-		xOffset += 142
+		xOffset += 2*AxisBoxWidth
 	endif
 	// Add Z controls, if present
-	if (hasZ)
-		NVAR zStepSize
-		NVAR zMIN
-		NVAR zMax
-		NVAR zRes
-		GroupBox FocusGroup,pos={(xOffset),2},size={142,153},title="Focus/Z",fSize=16,fStyle=1
-		TitleBox Ztitle,pos={(xOffset + 4),36},size={15,24},title="Z",fSize=20,frame=0,fStyle=1
-		SetVariable ZDistanceSetVar,pos={(xOffset + 4),101},size={134,16}, title="From zero", fSize=12
-		SetVariable ZDistanceSetVar value= $"root:Packages:" + theStageEncoder + ":ZDistanceFromZero", limits={-INF, inf, 0}
-		if (hasMotor)
-			GUIPSIsetVarEnable ("", "ZDistanceSetVar", "StageSetDistanceProc", zMin, zMax, 0, 0, 0, 2, "m")
-			Button ZUpStepButton,pos={(xOffset + 33),28},size={88,20},proc=StageStepButtonProc,title="Up 1 Step"
-			Button ZDownStepButton,pos={(xOffset + 33),51},size={88,20},proc=StageStepButtonProc,title="Down 1 Step"
-			SetVariable ZStepSizeSetVar,pos={(xOffset + 4),80},size={134,16},title="Step Size",fSize=12
-			SetVariable ZStepSizeSetVar,value= $"root:Packages:" + theStageEncoder + ":ZstepSize"
-			GUIPSIsetVarEnable ("", "ZStepSizeSetVar", "StageSetIncProc", zRes, (zMax-zMin)/10, zRes, 1, zRes, 2, "m")
-			Button ZGoToZeroButton,pos={(xOffset + 34),126},size={74,21},proc=StageGoToZeroProc,title="Go to Zero"
-		else
-			SetVariable ZDistanceSetVar, noedit =1, limits={-INF, INF, 0}, format="%.2W0Pm"
+	if (Properties[%has_Z])
+		GroupBox FocusGroup,pos={(xOffset),2},size={AxisBoxWidth,BoxHeight},title="Focus/Z",fSize=16,fStyle=1
+		TitleBox ZTitle,pos={(xOffset + 4),20},size={15,24},title="Z",fSize=20,frame=0,fStyle=1
+		SetVariable ZDistanceSetVar,pos={(xOffset+20),24.00},size={121.00,22.00}
+		SetVariable ZDistanceSetVar,title="Pos",value=DistanceFromZero[%Z],fSize=14, noedit=1
+		GUIPSIsetVarEnable ("", "ZDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
+		if (Properties[%has_Mtr])
+			Button ZUpStepButton,pos={(xOffset + 33), 50},size={88.00,20.00},proc=StageStepButtonProc
+			Button ZUpStepButton,title="Up 1 Step"
+			Button ZDownStepButton,pos={(xOffset + 33),73.00},size={88.00,20.00},proc=StageStepButtonProc
+			Button ZDownStepButton,title="Down 1 Step"
+			SetVariable ZStepSizeSetVar,pos={(xOffset + 4),97.00},size={134.00,18.00}
+			SetVariable ZStepSizeSetVar,title="Step Size", fsize=12,value=StepSize[%Z]
+			GUIPSIsetVarEnable("", "ZstepSizeSetvar", "StageSetIncSetvarProc", Properties[%res_Z], INF, Properties[%res_Z], 1, Properties[%res_Z], 2, "m")
+			Button ZGoToButton,pos={(xOffset + 2), 129.00},size={39.00,20.00},proc=StagesSetAbsButtonProc,title="Go To"
+			SetVariable ZGoToSetVar,pos={(xOffset + 46),130.00},size={106.00,18.00},fSize=12, value=MoveTo[%Z]
+			GUIPSIsetVarEnable("", "ZGoToSetVar", "", Properties[%min_Z], Properties[%max_Z], 0, 0, 0, 3, "m")
 		endif
-		xOffset += 142
+		xOffset += AxisBoxWidth
 	endif
 	// Add Axial controls, if Present
-	if (hasAx)
-		NVAR aStepSize
-		NVAR aMIN
-		NVAR aMax
-		NVAR aRes
-		GroupBox AxisGroup,pos={(xOffset),2},size={142,153},title="Axial",fSize=16,fStyle=1
-		TitleBox Axtitle,pos={(xOffset + 4),36},size={15,24},title="Ax",fSize=20,frame=0,fStyle=1
-		SetVariable axDistanceSetVar,pos={(xOffset + 4),101},size={134,16}, title="From zero", fSize=12
-		SetVariable axDistanceSetVar value= $"root:Packages:" + theStageEncoder + ":axDistanceFromZero"
-		if (hasMotor)
-			GUIPSIsetVarEnable ("", "axDistanceSetVar", "StageSetDistanceProc", aMin, aMax, 0, 0, 0, 2, "m")
-			Button axOutStepButton,pos={(xOffset + 33),28},size={88,20},proc=StageStepButtonProc,title="Out 1 Step"
-			Button axInStepButton,pos={(xOffset + 33),51},size={88,20},proc=StageStepButtonProc,title="In 1 Step"
-			SetVariable aStepSizeSetVar,pos={(xOffset + 4),80},size={134,16},title="Step Size", fSize=12
-			SetVariable aStepSizeSetVar,value= $"root:Packages:" + theStageEncoder + ":aStepSize"
-			GUIPSIsetVarEnable ("", "aStepSizeSetVar", "StageSetIncProc", aRes, (aMax-aMin)/10, aRes, 1, aRes, 2, "m")
-			
-			Button axGoToZeroButton,pos={(xOffset + 34),126},size={74,21},proc=StageGoToZeroProc,title="Go to Zero"
-		else
-			SetVariable axDistanceSetVar, noedit =1,limits={-INF, INF, 0}, format="%.2W0Pm"
+	if (Properties[%has_Ax])
+		GroupBox AxisGroup,pos={(xOffset),2},size={AxisBoxWidth,boxHeight},title="Axial",fSize=16,fStyle=1
+		TitleBox Axtitle,pos={(xOffset + 4),20},size={15,24},title="A",fSize=20,frame=0,fStyle=1
+		SetVariable AxDistanceSetVar,pos={(xOffset + 20),24},size={121, 22}
+		SetVariable AxDistanceSetVar, title="Pos", value= DistanceFromZero[%A], fSize=14, noedit=1
+		GUIPSIsetVarEnable("", "AxDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
+		if (Properties[%has_Mtr])
+			Button AxOutStepButton,pos={(xOffset + 33), 50},size={88.00,20.00},proc=StageStepButtonProc
+			Button AxOutStepButton,title="Out 1 Step"
+			Button AxInStepButton,pos={(xOffset + 33),73.00},size={88.00,20.00},proc=StageStepButtonProc
+			Button AxInStepButton,title="In 1 Step"
+			SetVariable AxStepSizeSetVar,pos={(xOffset + 4),97.00},size={134.00,18.00}
+			SetVariable AxStepSizeSetVar,title="Step Size", fsize=12,value=StepSize[%A]
+			GUIPSIsetVarEnable("", "AxstepSizeSetvar", "StageSetIncSetvarProc", Properties[%res_Ax], INF, Properties[%res_Ax], 1,  Properties[%res_Ax], 2, "m")
+			Button AxGoToButton,pos={(xOffset + 2), 129.00},size={39.00,20.00},proc=StagesSetAbsButtonProc,title="Go To"
+			SetVariable AxGoToSetVar,pos={(xOffset + 46),130.00},size={106.00,18.00},fSize=12, value=MoveTo[%A]
+			GUIPSIsetVarEnable("", "AxGoToSetVar", "", Properties[%min_Ax], Properties[%max_Ax], 0, 0, 0, 2, "m")
+			xOffset += AxisBoxWidth
 		endif
 	endif
-	setdatafolder $SavedFolder
 	// invite stage encoder to put up any special controls it has
 	Funcref StageAddControls_Template StageAddFunc = $"StageAddControls_" + theStageEncoder
-	StageAddFunc (7, 95, theStageEncoder + "_Controls") // 7,95 are X and Y offset to where special controls can be placed
+	StageAddFunc(4, 97, theStageEncoder + "_Controls") // 4,97 are X and Y offset to where special controls can be placed
+	DoUpdate /W=$theStageEncoder + "_Controls" /E=1
 	// Set hook function to close port when panel is closed
-	setwindow $theStageEncoder + "_Controls"  hook(QHook )=StageClosePortAndPanel
+	setwindow $theStageEncoder + "_Controls"  hook(QHook)=StageClosePortAndPanel
+	WC_WindowCoordinatesRestore(theStageEncoder + "_Controls")
 	// Check serial ports and set port if only one is found
 	variable Numports = ItemsInList (portList)
 	switch (numports)
@@ -552,8 +1068,8 @@ Function StageMakePanel (theStageEncoder)
 			DoWindow/K $theStageEncoder + "_Controls"
 			return 1
 			break
-		case 1:	// one  port/device found. No need to make user choose, choose for user 
-			StagePortProc(theStageEncoder, stringfromlist (0, portList, ";")) 
+		case 1:	// one  port/device found. No need to make user choose, choose for user
+			StagePortProc(theStageEncoder, stringfromlist (0, portList, ";"))
 			break
 		default:	// more than one serial port.
 			thePort = "SELECT PORT"
@@ -561,20 +1077,29 @@ Function StageMakePanel (theStageEncoder)
 	endswitch
 end
 
+
 //*************************************************************************************************
-// hook function to close the serial port when the panel is closed, although igor will do this when it quits, so is only needed if you want to use the serial port with another
+// hook function to close the serial port when the panel is closed, although Igor will do this when it quits, so is only needed if you want to use the serial port with another
 // program while Igor is still running, or use a different encoder/port combination.
 Function StageClosePortAndPanel(s)
 	STRUCT WMWinHookStruct &s
-	
+
 	string theEncoder = stringfromlist (0, s.winName, "_")
 	switch(s.eventCode)
 		case 2: // Handle Kill
+			WC_WindowCoordinatesSave(s.WinName)
 			// Call Stage's closeport function
 			FuncRef StageClose_Template StageCloseFunc =  $"StageClose_" + theEncoder
-			StageCloseFunc ()
-			// Kill packages folder for this encoder
-			KillDataFolder/Z $"root:packages:" + theEncoder
+			SVAR thePort =$"root:packages:" + theEncoder + ":thePort"
+			StageCloseFunc (thePort)
+#ifdef STAGE_IS_THREADED
+			// release thread
+			NVAR threadID= $"root:packages:" + theEncoder + ":stageThread"
+			variable Result = ThreadGroupRelease(threadID)
+			if (Result)
+				printf "Stage Thread for %s was not stopped.\r", theEncoder
+			endif
+#endif
 			return 1
 			break
 		default:
@@ -583,323 +1108,285 @@ Function StageClosePortAndPanel(s)
 	endswitch
 End
 
+
 //*********************************************************************************************
 //When a serial port is selected, calls StagePortProc with port name
 // Last Modified Jul 11 2011 by Jamie Boyd
 Function Stages_PortPopMenuProc(pa) : PopupMenuControl
 	STRUCT WMPopupAction &pa
-	
+
 	switch( pa.eventCode )
 		case 2: // mouse up
-			String thePort = pa.popStr
 			//Control panel is named for the stageEncoder procedure
 			string theStageEncoder = stringfromlist (0, pa.win, "_")
+			String thePort = pa.popStr
 			StagePortProc(theStageEncoder, thePort)
 			break
 	endswitch
 	return 0
 End
 
-//*********************************************************************************************
-//When a serial port is selected, sets the global string to the selected value, and tries to initialize the stage encoder
-// Last Modified Sep 29 2010 by Jamie Boyd
-Function StagePortProc(theStageEncoder, thePort)
-	String theStageEncoder
-	String thePort
-	
-	// Save port name in global string in pakages folder for this stage procedure
-	SVAR thePortName = $"root:packages:" + theStageEncoder + ":thePort"
-	thePortName = thePort
-	Funcref StageSetupPort_Template StageSetupPortFunc = $"StageSetUpPort_" + theStageEncoder
-	StageSetupPortFunc (thePort) // initilaize the encoder with the chosen port, do whatever needs to be done for this device
-	// do an initial update
-	STRUCT WMButtonAction ba
-	ba.eventCode = 2
-	ba.win = theStageEncoder + "_Controls"
-	StageUpdateButtonProc(ba)
-
-end 
-
 
 //*******************************************************************************
-//------------------Controls for Options Section-----------------------------------------
+//------------------Controls for Options Section--------------------------------
 //*******************************************************************************
-// Calls the stage encoder's update function to get latest stage coodinates
-// Update func must be modeled after StageUpdateTemplate
+// Button Procedure for Update - updates ALL the axes 
+// Last modified 2025/12/19 by Jamie Boyd
 Function StageUpdateButtonProc(ba) : ButtonControl
 	STRUCT WMButtonAction &ba
 
 	switch( ba.eventCode )
 		case 2: // mouse up
 			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			variable xS=1, yS=1, zS=1, aS=1
-			funcref  StageUpdate_Template UpdateStage=$"StageUpDate_" + theStageEncoder
-			UpdateStage (xS, yS, zS, aS)
-			// No need to update global variables on control panel with xS, yS, and zS
-			// as the UpdateStage procedure should do this
+			WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
+			variable axisBits = 0
+			if (Properties[%has_XY])
+				axisBits += (kXbit + kYbit)
+			endif
+			if (Properties[%has_Z])
+				axisBits += kZbit
+			endif
+			if (Properties[%has_Ax])
+				axisBits += kAbit
+			endif
+			StageUpdate (theStageEncoder, AxisBits, 0)
 			break
 	endswitch
 	return 0
 End
 
+
 //*******************************************************************************
-// Turns on and off a background task to monitor stage position
-// Last modified jun 29 2009 by Jamie Boyd
+// check box proc for background task to monitor stage position
+// Turns on and off stage's background task to monitor stage position, or does it in thread
+// Last modified 2025/12/16 by Jamie Boyd
 Function StageAutoCheckProc(cba) : CheckBoxControl
 	STRUCT WMCheckboxAction &cba
 
 	switch( cba.eventCode )
 		case 2: // mouse up
-			Variable checked = cba.checked
 			string theStageEncoder = stringfromlist (0, cba.win, "_")
-			funcref  StageSetAuto_Template SetAuto=$"StageSetAuto_" + theStageEncoder
-			SetAuto (checked)
-			break
+			StageSetAuto (theStageEncoder, cba.checked)
 	endswitch
 	return 0
 End
 
+
 //*******************************************************************************
-// Calls the stage encoder's setzero procedure.
-// Set zero procedure takes no arguments and returns no results
-Function StageSetzeroProc(ba) : ButtonControl
+// setZero Button Procedure - sets all axes such that current position is zero position
+// Last modified 2025/12/19 by Jamie Boyd
+Function StageSetzeroButtonProc(ba) : ButtonControl
 	STRUCT WMButtonAction &ba
 
 	switch( ba.eventCode )
 		case 2: // mouse up
 			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			variable xS, yS, zS
-			funcref  StageSetzero_Template SetzeroProc=$"StageSetzero_" + theStageEncoder
-			SetzeroProc ()
+			WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
+			variable axesBits= 0
+			if (Properties [%has_XY])
+				axesBits += (kXBit + kYbit)
+			endif
+			if (Properties [%has_Z])
+				axesBits += kZbit
+			endif
+			if (Properties [%has_Ax])
+				axesBits += kAbit
+			endif
+			StageSetZero (theStageEncoder, axesBits, 0)
 			break
 	endswitch
 	return 0
 End
 
+
 //*******************************************************************************
-// Turns manual control on or off, so no bumping during crucial experimental sequence
-// Uses stage encoder procedures StageSetManual_ function.
-// Last Modified Jun 02 2009 by Jamie Boyd
+// button procedure for Reset IO Clears any pending I/O on the serial port used for the focus motor, in case there any errors
+// Last modified 2025/11/26 by Jamie Boyd
+Function StageResetIOButtonProc(ba) : ButtonControl
+	STRUCT WMButtonAction &ba
+
+	switch( ba.eventCode )
+		case 2: // mouse up
+			string theStageEncoder = stringfromlist (0, ba.win, "_")
+			StageRestIO (theStageEncoder)
+			break
+	endswitch
+	return 0
+End
+
+
+//*******************************************************************************
+//---------------functions for controls for moving motorized stage--------------
+// For move controls, default is to return immediately, and assume we got there.
+// Shift key held down will only return when position has been obtained
+// Command/ctrl will set a background task to monitor position.
+//*******************************************************************************
+
+
+//*******************************************************************************
+// CheckBox procedure for disabling manual control so no accidental joystick bumping during crucial experimental sequence
+// Last modified 2025/11/27 by Jamie Boyd
 Function StageSetManualCheckProc(cba) : CheckBoxControl
 	STRUCT WMCheckboxAction &cba
 
 	switch( cba.eventCode )
 		case 2: // mouse up
-			Variable checked = cba.checked
 			string theStageEncoder = stringfromlist (0, cba.win, "_")
-			funcref  StageSetManual_Template SetManualStage=$"StageSetManual_" + theStageEncoder
-			SetManualStage (checked)
-			break
-	endswitch
-
-	return 0
-End
-
-//*******************************************************************************
-//Clears any pending I/O on the serial port used for the focus motor, in case there any errors 
-// Last modified jun 21 2009 by Jamie Boyd
-Function StageResetIOProc(ba) : ButtonControl
-	STRUCT WMButtonAction &ba
-
-	switch( ba.eventCode )
-		case 2: // mouse up
-			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			funcref StageResetIO_Template ResetIO = $"StageResetIO_" + theStageEncoder
-			ResetIO ()
+			StageSetManual (theStageEncoder, cba.checked)
 			break
 	endswitch
 	return 0
 End
 
-//*******************************************************************************
-//--------------------functions for controls that move the stage------------------------------
-// For move controls, default is to return immediately, and assume we got there. Shift key held down will will only return when position has been obtained
-// Command/ctrl will set a background task to monitor position. 
-//*******************************************************************************
-// Goes to zero position for X,Y and Z
-// Last Modified Nov 25 2010 by Jamie Boyd
-Function StageGoToZeroProc(ba) : ButtonControl
-	STRUCT WMButtonAction &ba
 
-	switch( ba.eventCode )
-		case 2: // mouse up
-			variable xS=NaN,yS=NaN,zS=NaN, aS=NaN
-			strswitch (ba.ctrlName)
-				case "StageXYGoToZeroButton":
-					xS =0
-					yS =0
+//*******************************************************************************
+// Setvariable Procedure for setting step increments for each step of the stepping buttons.
+// Not all stage encoders support storing the increment on the stage encoder, but it is
+// always stored in the wave that is linked to the corresponding setvariable controls
+// Last modified 2025/11/27 by Jamie Boyd
+Function StageSetIncSetvarProc (sva) : SetVariableControl
+	STRUCT WMSetVariableAction &sva
+	switch( sva.eventCode )
+		case 1: // mouse up
+		case 8: // Enter key
+			string theStageEncoder = stringfromlist (0, sva.win, "_")
+			string AxisStr
+			strswitch (sva.ctrlName)
+				case "XstepSizeSetvar":
+					AxisStr= "X"
 					break
-				case "ZGoToZeroButton":
-					zS=0
+				case "YstepSizeSetvar":
+					AxisStr= "Y"
 					break
-				case "axGoToZeroButton":
-					aS =0
+				case "zStepSizeSetVar":
+					AxisStr= "Z"
+					break
+				case "axStepSizeSetVar":
+					AxisStr= "A"
 					break
 				default:
-					doAlert 0, "The StageGoToZeroProc was not expecting a control names \"" + ba.ctrlName + "\"."
+					doalert 0, "StageSetIncSetvarProc was not expecting a control named \"" + sva.ctrlname + "\"."
 					return 1
 					break
-			endswitch
-			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			funcRef StageMove_Template StageMove = $"StageMove_" + theStageEncoder
-			variable returnWhen =kStagesReturnNow
+			endSwitch
+			StageSetIncrement (theStageEncoder, AxisStr, sva.dval, 0)
+	endSwitch
+	return 0
+End
+
+
+//*******************************************************************************
+// Button Proc to Step stage in predefined increments
+// Last Modified 2025/11/27 by Jamie Boyd
+Function StageStepButtonProc(ba) : ButtonControl
+	STRUCT WMButtonAction &ba
+
+	switch( ba.eventCode )
+		case 2: // mouse up
+			// check for return mode
+			variable returnWhen = kStagesReturnNow
 			if (ba.eventMod & 2)
-				returnWhen = kStagesReturnLater
+				returnWhen = kStagesReturnAfter
 			elseif (ba.eventmod & 8)
 				returnWhen = kStagesReturnBkg
 			endif
-			StageMove (0,returnWhen,xS,yS,zS,aS)
-			break
-	endswitch
-	return 0
-End
-
-//*******************************************************************************
-// Steps stage in predefined increments
-// Last Modified Sep 28 2010 by Jamie Boyd
-Function StageStepButtonProc(ba) : ButtonControl
-	STRUCT WMButtonAction &ba
-	
-	switch( ba.eventCode )
-		case 2: // mouse up
 			// read stage proc name from control panel
 			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			variable polarity =1, xS=NaN,yS=NaN,zS=NaN, aS=NaN
+			variable direction
+			string anAxis
 			strswitch (ba.ctrlName)
 				case "XleftStepButton":
-					polarity =-1
+					anAxis = "X"
+					direction = -1
+					break
 				case "XrightStepButton":
-					NVAR xStepSize = $"root:packages:" + theStageEncoder + ":xStepSize"
-					NVAR xPol = $"root:packages:" + theStageEncoder + ":xPol" 
-					polarity *= xPol
-					xS = xStepSize
+					anAxis = "X"
+					direction = +1
 					break
 				case "YBackStepButton":
-					polarity =-1
+					anAxis = "Y"
+					direction = -1
+					break
 				case "YForwardStepButton":
-					NVAR yStepSize = $"root:packages:" + theStageEncoder + ":yStepSize"
-					NVAR yPol = $"root:packages:" + theStageEncoder + ":yPol" 
-					polarity *= yPol
-					yS = yStepSize
+					anAxis = "Y"
+					direction = +1
+					break	
+				case "ZDownStepButton":
+					anAxis = "Z"
+					direction = -1
 					break
 				case "ZUpStepButton":
-					polarity = -1
-				case "ZDownStepButton":
-					NVAR zstepSize = $"root:packages:" + theStageEncoder + ":zStepSize"
-					NVAR zPol = $"root:packages:" + theStageEncoder + ":zPol" 
-					polarity *= zPol
-					zS = zstepSize
+					anAxis = "Z"
+					direction = +1
 					break
-				case "axOutStepButton":
-					polarity = -1
-				case "axInStepButton":
-					NVAR aStepSize =  $"root:packages:" + theStageEncoder + ":aStepSize"
-					NVAR aPol = $"root:packages:" + theStageEncoder + ":aPol"		
-					polarity *= aPol
-					aS = aStepSize
+				case "AxOutStepButton":
+					anAxis = "A"
+					direction = -1
+					break
+				case "AxInStepButton":
+					anAxis = "A"
+					direction = +1
 					break
 				default:
 					doAlert 0, "StageStepButtonProc was not expecting a control named \"" + ba.ctrlName + "\"."
 					return 1
 					break
 			endswitch
-			// move the selected axis
-			variable returnWhen =kStagesReturnNow
-			if (ba.eventMod & 2)
-				returnWhen = kStagesReturnLater
-			elseif (ba.eventmod & 8)
-				returnWhen = kStagesReturnBkg
-			endif
-			funcRef StageMove_Template StageMove = $"StageMove_" + theStageEncoder
-			StageMove (polarity, returnWhen, xS,yS,zS, aS)
+			StageStep (theStageEncoder, anAxis, Direction, returnWhen)
 	endSwitch
 	return 0
 End
 
 //*******************************************************************************
-// Sets the increment for each step of the stepping buttons. Not all stage encoders support storing the increment on the 
-// stage encoder, but it is always stored in the global variable that is linked to the corresponding setvariable control
-// Last Modified Sep 28 2010 by Jamie Boyd
-Function StageSetIncProc (sva) : SetVariableControl
-	STRUCT WMSetVariableAction &sva
+// Button Proc to move stage to absolute position
+// Last Modified 2025/11/27 by Jamie Boyd
+Function StagesSetAbsButtonProc(ba) : ButtonControl
+	STRUCT WMButtonAction &ba
 
-	switch( sva.eventCode )
-		case 1: // mouse up
-		case 2: // Enter key
-		case 3: // Live update
-			Variable dval = sva.dval
-			String sval = sva.sval
-			string theStageEncoder = stringfromlist (0, sva.win, "_")
-			funcRef StageSetInc_Template StageSetInc = $"StageSetInc_" + theStageEncoder
-			strswitch (sva.ctrlName)
-				case "XstepSizeSetvar":
-					StageSetInc (xVal = dval)
-					break
-				case "YStepSizeSetVar":
-					StageSetInc (yVal = dval)
-					break
-				case "zStepSizeSetVar":
-					StageSetInc (zVal = dval)
-					break
-				case "aStepSizeSetVar":
-					StageSetInc (aVal = dval)
-					break
-				default:
-					doalert 0, "StageSetIncProc was not expecting a control named \"" + sva.ctrlname + "\"."
-					return 1
-					break
-			endSwitch
-			break
-	endswitch
-	return 0
-End
-
-//*******************************************************************************
-// moves the stage to an absolute position given by the variabel controlled by the setvar
-// Last Modified Nov 25 2010 by Jamie Boyd
-Function StageSetDistanceProc(sva) : SetVariableControl
-	STRUCT WMSetVariableAction &sva
-
-	switch( sva.eventCode )
-		case 1: // mouse up
-		case 2: // Enter key
-		case 3: // Live update
-			variable xS=NaN,yS=NaN,zS=NaN, aS=NaN
-			strswitch (sva.ctrlName)
-				case "XDistanceSetVar":
-					xS = sva.dval
-					break
-				case "YDistanceSetvar":
-					yS = sva.dval
-					break
-				case "zDistanceSetVar":
-					zS=sva.dval
-					break
-				case "axDistanceSetVar":
-					aS = sva.dval
-					break
-				default:
-					doalert 0, "StageSetDistanceProc was not expecting a control named \"" + sva.ctrlname + "\"."
-					return 1
-					break
-			endSwitch
-			string theStageEncoder = stringfromlist (0, sva.win, "_")
-			funcRef StageMove_Template StageMove = $"StageMove_" + theStageEncoder
-			variable returnWhen =kStagesReturnNow
-			if (sva.eventMod & 2)
-				returnWhen = kStagesReturnLater
-			elseif (sva.eventmod & 8)
+	switch( ba.eventCode )
+		case 2: // mouse up
+			// check for return mode
+			variable returnWhen = kStagesReturnNow
+			if (ba.eventMod & 2)
+				returnWhen = kStagesReturnAfter
+			elseif (ba.eventmod & 8)
 				returnWhen = kStagesReturnBkg
 			endif
-			StageMove (0,returnWhen,  xS, yS, zS, aS)
+			// read stage proc name from control panel
+			string theStageEncoder = stringfromlist (0, ba.win, "_")
+			variable axisBits =0
+			strswitch (ba.ctrlName)
+				case "XYGoToButton":
+					axisBits += kXbit + kYbit
+					break
+				case "ZGoToButton":
+					axisBits += kZbit
+					break
+				case "AxGoToButton":
+					axisBits += kAbit
+					break
+			endSwitch
+			WAVE moveToWave = $"root:packages:" + theStageEncoder + ":MoveTo"
+			StagesSetAbs (theStageEncoder, axisBits, moveToWave, returnWhen)
+		case -1: // control being killed
 			break
 	endswitch
 	return 0
 End
+
+
+
+//*******************************************************************************
+//---------------functions for saving and going to positions --------------
+// For go to position button, default is to return immediately, and assume we got there.
+// Shift key held down will only return when position has been obtained
+// Command/ctrl will set a background task to monitor position.
+//*******************************************************************************
+
 
 //*************************************************************************************************************
 // Saves current stage coordinates in a special wave in the Stages folder
-// Last modified Sep 28 2010 by Jamie Boyd
+// Last modified 2025/11/28 by Jamie Boyd
 Function StageSavePosButtonProc(ba) : ButtonControl
 	STRUCT WMButtonAction &ba
 
@@ -907,10 +1394,10 @@ Function StageSavePosButtonProc(ba) : ButtonControl
 		case 2: // mouse up
 			// get name of Stage encoder and some info
 			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			NVAR hasXY =$" root:Packages:" + theStageEncoder + ":hasXY"
-			NVAR hasZ =$" root:Packages:" + theStageEncoder + ":hasZ"
-			NVAR hasAx = $" root:Packages:" + theStageEncoder + ":hasAx"
-			// get name for this set of coordinates
+			WAVE Properties = $"root:Packages:" + theStageEncoder + ":Properties"
+			WAVE DistanceFromZero =  $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+			// get name for this set of coordinates, and select axes to save.
+			// after the prompt runs, axes to save will be set to 1, either by code or by user choice
 			string PosString
 			Prompt PosString, "Name for saved coordinates:"
 			variable doXY, doZ, doAx
@@ -918,17 +1405,17 @@ Function StageSavePosButtonProc(ba) : ButtonControl
 			Prompt doZ, "Save Z Position:",  popup,"Yes;No"
 			Prompt doAx "Save Axial Position:", popUp, "Yes;No"
 			// Only ask to save things this stage has installed
-			if (hasXY)
-				if (hasZ)
-					if (hasAX)
+			if (Properties[%has_XY])
+				if (Properties[%has_Z])
+					if (Properties[%has_Ax])
 						DoPrompt /HELP="Saves Current Stage Position for later recall" "Save Coordinates", PosString, doXY, doZ, doAx
 					else // has XY and Z, but not axial
-						doAx =2 // Don't save axial
+						doAx = 2 // Don't save axial
 						DoPrompt /HELP="Saves Current Stage Position for later recall" "Save Coordinates", PosString, doXY, doZ
 					endif
 				else // Has XY but not Z
 					doZ = 2
-					if (HasAx)
+					if (Properties[%has_Ax])
 						DoPrompt /HELP="Saves Current Stage Position for later recall" "Save Coordinates", PosString, doXY, doAx
 					else // has XY only
 						doXY =1 // of course you are going to save XY  - it's all you have!
@@ -938,16 +1425,16 @@ Function StageSavePosButtonProc(ba) : ButtonControl
 				endif
 			else // does not have XY
 				doXY =2
-				if (hasZ)
-					if (hasAX) // has Z and Ax
+				if (Properties[%has_Z])
+					if (Properties[%has_Ax]) // has Z and Ax
 						DoPrompt /HELP="Saves Current Stage Position for later recall" "Save Coordinates", PosString, doZ, doAx
-					else // Only has Z 
+					else // Only has Z
 						doZ=1
 						doAx=2
 						DoPrompt /HELP="Saves Current Stage Position for later recall" "Save Coordinates", PosString
 					endif
-				else // does not have XY or Z 
-					if (hasAx) // only has axial - possible?
+				else // does not have XY or Z
+					if (Properties[%has_Ax]) // only has axial - possible?
 						doZ=2
 						doAx=1
 						DoPrompt /HELP="Saves Current Stage Position for later recall" "Save Coordinates", PosString
@@ -958,25 +1445,25 @@ Function StageSavePosButtonProc(ba) : ButtonControl
 				endif
 			endif
 			if (V_Flag == 1)// user cancelled
-				return 1 
+				return 1
 			endif
 			// Find row to insert point
 			variable iPos
-			wave/z PosWave = $"root:packages:" + theStageEncoder + ":SavedPosWave"
-			if (!(waveExists (posWave)))
+			wave/z savedPosWave = $"root:packages:" + theStageEncoder + ":SavedPosWave"
+			if (!(waveExists (savedPosWave)))
 				make/n = (1,4)  $"root:packages:" + theStageEncoder + ":SavedPosWave"
-				wave PosWave =  $"root:packages:" + theStageEncoder + ":SavedPosWave"
-				setdimlabel 1,0, X_Pos PosWave
-				setdimlabel 1,1, Y_Pos PosWave
-				setdimlabel 1,2, Z_Pos PosWave
-				setdimlabel 1,3, axial_Pos PosWave
+				wave savedPosWave =  $"root:packages:" + theStageEncoder + ":SavedPosWave"
+				setdimlabel 1,0, X_Pos savedPosWave
+				setdimlabel 1,1, Y_Pos savedPosWave
+				setdimlabel 1,2, Z_Pos savedPosWave
+				setdimlabel 1,3, axial_Pos savedPosWave
 				iPos =0
 			else
-				variable nPos = dimsize (PosWave,0)
-				for (iPos =0; iPos < nPos && cmpStr (PosString,  GetDimLabel(PosWave, 0, iPos)) != 0 ; iPos += 1)
+				variable nPos = dimsize (savedPosWave,0)
+				for (iPos =0; iPos < nPos && cmpStr (PosString,  GetDimLabel(savedPosWave, 0, iPos)) != 0 ; iPos += 1)
 				endfor
 				if (iPos == nPos)
-					insertPoints iPos, 1, PosWave
+					insertPoints iPos, 1, savedPosWave
 				else
 					DoAlert 1, "A saved position with the name \"" +PosString + "\" already exists. Overwrite position?"
 					if  (V_Flag == 2) // no was clicked
@@ -984,26 +1471,37 @@ Function StageSavePosButtonProc(ba) : ButtonControl
 					endif
 				endif
 			endif
-			// Update the stage and get X, Y, Z, Ax
-			variable xS=(doXY ==1 ? 1: Nan), yS=(doXY ==1 ? 1: Nan), zS=(doZ ==1 ? 1: Nan), aS=(doAx ==1 ? 1: Nan)
-			funcref  StageUpdate_Template UpdateStage=$"StageUpDate_" + theStageEncoder
-			UpdateStage (xS, yS, zS, aS)
 			// Fill in data, as requested, or Nans
-			SetDimLabel 0,iPos, $cleanupName (PosString, 0),PosWave
-			PosWave [iPos] [0] =xS
-			PosWave [iPos] [1] = yS
-			PosWave [iPos] [2] = zS
-			PosWave [iPos] [3] = aS
+			SetDimLabel 0,iPos, $cleanupName (PosString, 0),savedPosWave
+			if (doXY ==1)
+				savedPosWave [iPos] [%X_Pos] = DistanceFromZero[%X]
+				savedPosWave [iPos] [%Y_Pos] = DistanceFromZero[%Y]
+			else
+				savedPosWave [iPos] [%X_Pos] = NaN
+				savedPosWave [iPos] [%Y_Pos] = NaN
+			endif
+			if (doZ ==1)
+				savedPosWave [iPos] [%Z_Pos] = DistanceFromZero[%Z]
+			else
+				savedPosWave [iPos] [%Z_Pos] = Nan
+			endif
+			if (doAx == 1)
+				savedPosWave [iPos] [%axial_pos] = DistanceFromZero[%A]
+			else
+				savedPosWave [iPos] [%axial_pos] = NaN
+			endif
 			break
 	endswitch
 	return 0
 End
 
+
+
 //*************************************************************************************************************
 // Returns a list of saved stage positions. The names of the positions are stored in the rows dimension label
 // Last Modified Oct 13 2010 by Jamie Boyd
 Function/S StageListSavedPos ()
-	
+
 	string theStageEncoder = stringfromlist (0, stringfromlist (0, WinList("*_Controls", ";", "" ) , "_"))
 	string returnStr = ""
 	wave/z PosWave = $"root:packages:" + theStageEncoder + ":SavedPosWave"
@@ -1016,13 +1514,13 @@ Function/S StageListSavedPos ()
 	endfor
 	return returnStr
 end
-	
+
 //*************************************************************************************************************
 //Sends the stage to the selected  saved stage position.
-// Last Modified Nov 25 2010 by Jamie Boyd
+// Last Modified 2025/11/28 by Jamie Boyd
 Function StageGoToSavedPopMenuProc(pa) : PopupMenuControl
 	STRUCT WMPopupAction &pa
-	
+
 	switch( pa.eventCode )
 		case 2: // mouse up
 			string theStageEncoder = stringfromlist (0, pa.win, "_")
@@ -1044,33 +1542,71 @@ Function StageGoToSavedPopMenuProc(pa) : PopupMenuControl
 			endif
 			variable returnWhen = kStagesReturnNow
 			if (pa.eventMod & 2)
-				returnWhen =kStagesReturnLater
+				returnWhen =kStagesReturnAfter
 			elseif (pa.eventmod & 8)
 				returnWhen = kStagesReturnBkg
 			endif
+			SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
+			WAVE selectedForCMD =  $"root:packages:" + theStageEncoder + ":selectedForCMD"
+			selectedForCMD = 0
+			WAVE MoveTo =  $"root:packages:" + theStageEncoder + ":moveTo"
+			WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistsFromZero"
+			WAVE Properties =  $"root:packages:" + theStageEncoder + ":Properties"
 			Variable pos = pa.popNum -1
-			variable xS= PosWave [pos] [0]
-			variable yS =  PosWave [pos] [1]
-			variable zS =  PosWave [pos] [2]
-			variable aS = PosWave [pos] [3]
-			funcRef StageMove_Template StageMove = $"StageMove_" + theStageEncoder
-			StageMove (0,returnWhen,xS,yS,zS,aS)
+			if (numtype ( PosWave [pos] [%X_Pos]) ==0)
+				selectedForCMD [%X] =1
+				MoveTo [%X] =  PosWave [pos] [%X_Pos]
+			endif
+			if (numtype ( PosWave [pos] [%Y_Pos]) ==0)
+				SelectedforCmd [%Y] =1
+				MoveTo [%Y] =  PosWave [pos] [%Y_Pos]
+			endif
+			if (numtype ( PosWave [pos] [%Z_Pos]) ==0)
+				SelectedforCmd [%Y] =1
+				MoveTo [%Z] =  PosWave [pos] [%Z_Pos]
+			endif
+			if (numtype ( PosWave [pos] [%axial_Pos]) ==0)
+				SelectedforCmd [%A] =1
+				MoveTo [%A] =  PosWave [pos] [%axial_Pos]
+			endif
+#ifdef STAGE_IS_THREADED
+			NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+			newdatafolder/s :tdata
+			variable/G returnWhenG = returnWhen
+			variable/G theCmdG = kThreadGoToPos
+			duplicate selectedForCMD SelectedG
+			duplicate MoveTo movetoG
+			WaveClear SelectedG, movetoG
+			ThreadGroupPutDF threadID, :
+#else
+			funcref StageMoveAbs_Template    StageMoveAbs = $"StageMoveAbs_" + theStageEncoder
+			SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+			WAVE Properties =  $"root:packages:" + theStageEncoder + ":Properties"
+			WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+			StageMoveAbs (thePort,returnWhen, selectedForCMD, moveTo, DistsFromZero, Properties)
+#endif
 			break
 	endswitch
 	return 0
 End
 
 //*************************************************************************************************************
+// ********************************* Code for PID panel and controls ******************************************
+//*************************************************************************************************************
+
+
+
+//*************************************************************************************************************
 // Code to put up a separate panel to adjust PID. For those encoders that support that sort of thing.
-// Last Modified Sep 29 by Jamie Boyd
+// Last Modified 2025/12/01 by Jamie Boyd
 Function StagePIDButtonProc(ba) : ButtonControl
 	STRUCT WMButtonAction &ba
 
 	switch( ba.eventCode )
 		case 2: // mouse up
 			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			NVAR hasPID = $"root:packages:" + theStageEncoder + ":hasPID"
-			if (!(hasPID))
+			WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
+			if (!(Properties[%has_PID]))
 				doAlert 0, "This stage encoder, \"" + theStageEncoder + "\", does not support setting PID."
 				return 0
 			endif
@@ -1078,14 +1614,10 @@ Function StagePIDButtonProc(ba) : ButtonControl
 			if (V_Flag ==1)
 				return 0
 			endif
-			// variables to update each axes as its controls are made
-			variable pS, iS, dS
-			funcRef StageFetchPID_Template FetchPID = $"StageFetchPID_" + theStageEncoder
+			WAVE PIDGet = $"root:packages:" + theStageEncoder + ":PIDget"
+			WAVE Selected = $"root:packages:" + theStageEncoder + ":selectedForCMD"
 			//what axes are available?
-			NVAR hasXY = $"root:packages:" + theStageEncoder + ":hasXY"
-			NVAR hasZ = $"root:packages:" + theStageEncoder + ":hasZ"
-			NVAR hasAx = $"root:packages:" + theStageEncoder + ":hasAx"
-			variable nAxes = 2*hasXY + hasZ + hasAx
+			variable nAxes = 2*Properties[%has_XY] + Properties[%has_Z] + Properties[%has_Ax]
 			// make the panel the calculated size for axes present
 			variable panelW = nAxes * 116 + 1
 			NewPanel /K=1 /W=(2,44, (panelW), 155) as "PID Settings-" + theStageEncoder
@@ -1093,153 +1625,172 @@ Function StagePIDButtonProc(ba) : ButtonControl
 			modifypanel fixedsize = 1
 			// add controls for each axis
 			variable xOffset=1
-			if (hasXY)
+			if (Properties[%has_XY])
 				// Controls for X
 				// group box
 				GroupBox XGrp,pos={(xOffset),0},size={115,110},title="X PID",fSize=16,fStyle=1
-				// set variables for P,I, and D
+				// set variables for P,I,and D
 				SetVariable XPsetVar,pos={(xOffset + 3),26},size={105,16},title="Proportional"
 				SetVariable XPsetVar,help={"Weights: the current error. Larger value = faster response, but greater instability and possible oscillation."}
-				SetVariable XPsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":xPIDp", proc=StagePIDSetVarProc
+				SetVariable XPsetVar,limits={-inf,inf,0},value= PIDGet[%X][%P]
 				SetVariable XIsetVar,pos={(xOffset + 3),44},size={105,16},title="Integral       "
 				SetVariable XIsetVar,help={"Weights: the sum of recent errors. Larger values= errors eliminated more quickly, but with larger overshoot.\""}
-				SetVariable XIsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":xPIDi", proc=StagePIDSetVarProc
+				SetVariable XIsetVar,limits={-inf,inf,0}, value= PIDGet[%X][%I]
 				SetVariable XDsetVar,pos={(xOffset + 3),62},size={105,16},title="Derivative   "
-				SetVariable XDsetVar,help={"Weights: rate the error has been changing. Larger value= less overshoot, but slower transient response, possible instability."}
-				SetVariable XDsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":xPIDd", proc=StagePIDSetVarProc
-				// Buttons for Getting PID from stage encoder and reverting to default values
-				Button XPIDupdateButton,pos={(xOffset + 4),85},size={50,20},title="Get", proc = Stages_FetchPIDButtonProc
-				Button XPIDupdateButton,help={"Fetches the PID values currently set for the X axis"}
-				Button XPIDdefaultButton,pos={(xOffset + 61),85},size={50,20},title="default",proc =Stages_RevertPIDButtonProc
+				SetVariable XDsetVar,help={"Weights: rate the error has been changing. Larger value = less overshoot, but slower transient response, possible instability."}
+				SetVariable XDsetVar,limits={-inf,inf,0},value = PIDGet[%X][%D]
+				// Buttons for Getting and Setting PID from stage encoder and reverting to default values
+				Button XPIDgetButton,pos={(xOffset + 4),85},size={28,20},title="Get", proc = Stages_GetPIDButtonProc
+				Button XPIDgetButton,help={"Fetches the PID values currently set for the X axis"}
+				Button XPIDsetButton,pos={(xOffset + 33),85.00},size={28.00,20.00},proc=Stages_SetPIDButtonProc,title="Set"
+				Button XPIDsetButton,help={"Sets the PID values for the X axis"}
+				Button XPIDdefaultButton,pos={(xOffset + 63),85.00},size={48.00,20.00},proc=Stages_RevertPIDButtonProc,title="default"
 				Button XPIDdefaultButton,help={"Sets the PID values for X axis to default  values stored as constants in the stage-specific procedure file"}
-				pS=1; iS=1; dS=1
-				FetchPID ("X", pS, iS, dS)
-				// Controls for Y
 				xOffset += 115
-				// group box
+				// Controls for Y
 				GroupBox YGrp,pos={(xOffset),0},size={115,110},title="Y PID",fSize=16,fStyle=1
-				// Set variables for P, I, and D
+				// set variables for P,I,and D
 				SetVariable YPsetVar,pos={(xOffset + 3),26},size={105,16},title="Proportional"
 				SetVariable YPsetVar,help={"Weights: the current error. Larger value = faster response, but greater instability and possible oscillation."}
-				SetVariable YPsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":yPIDp", proc=StagePIDSetVarProc
+				SetVariable YPsetVar,limits={-inf,inf,0},value= PIDGet[%Y][%P]
 				SetVariable YIsetVar,pos={(xOffset + 3),44},size={105,16},title="Integral       "
 				SetVariable YIsetVar,help={"Weights: the sum of recent errors. Larger values= errors eliminated more quickly, but with larger overshoot.\""}
-				SetVariable YIsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":yPIDi", proc=StagePIDSetVarProc
+				SetVariable YIsetVar,limits={-inf,inf,0}, value= PIDGet[%Y][%I]
 				SetVariable YDsetVar,pos={(xOffset + 3),62},size={105,16},title="Derivative   "
-				SetVariable YDsetVar,help={"Weights: rate the error has been changing. Larger value= less overshoot, but slower transient response, possible instability."}
-				SetVariable YDsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":yPIDd", proc=StagePIDSetVarProc
-				// Buttons for Getting PID from stage encoder and reverting to default values
-				Button YPIDupdateButton,pos={(xOffset + 4),85},size={50,20},title="Get", proc = Stages_FetchPIDButtonProc
-				Button YPIDupdateButton,help={"Fetches the PID values currently set for the Y axis"}
-				Button YPIDdefaultButton,pos={(xOffset + 61),85},size={50,20},title="default",proc =Stages_RevertPIDButtonProc
+				SetVariable YDsetVar,help={"Weights: rate the error has been changing. Larger value = less overshoot, but slower transient response, possible instability."}
+				SetVariable YDsetVar,limits={-inf,inf,0},value = PIDGet[%Y][%D]
+				// Buttons for Getting and Setting PID from stage encoder and reverting to default values
+				Button YPIDgetButton,pos={(xOffset + 4),85},size={28,20},title="Get", proc = Stages_GetPIDButtonProc
+				Button YPIDgetButton,help={"Fetches the PID values currently set for the Y axis"}
+				Button YPIDsetButton,pos={(xOffset + 33),85.00},size={28.00,20.00},proc=Stages_SetPIDButtonProc,title="Set"
+				Button YPIDsetButton,help={"Sets the PID values for the Y axis"}
+				Button YPIDdefaultButton,pos={(xOffset + 63),85.00},size={48.00,20.00},proc=Stages_RevertPIDButtonProc,title="default"
 				Button YPIDdefaultButton,help={"Sets the PID values for Y axis to default  values stored as constants in the stage-specific procedure file"}
-				pS=1; iS=1; dS=1
-				FetchPID ("Y", pS, iS, dS)
+				//pS=1; iS=1; dS=1
+				//FetchPID ("Y", pS, iS, dS)
 			endif
-			if (hasZ)
+			if (Properties[%has_Z])
 				xOffset += 115
 				// group box
 				GroupBox ZGrp,pos={(xOffset),0},size={115,110},title="Z PID",fSize=16,fStyle=1
 				// Set variables for P, I, and D
 				SetVariable ZPsetVar,pos={(xOffset + 3),26},size={105,16},title="Proportional"
 				SetVariable ZPsetVar,help={"Weights: the current error. Larger value = faster response, but greater instability and possible oscillation."}
-				SetVariable ZPsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":zPIDp", proc=StagePIDSetVarProc
+				SetVariable ZPsetVar,limits={-inf,inf,0},value= PIDGet[%Z][%P]
 				SetVariable ZIsetVar,pos={(xOffset + 3),44},size={105,16},title="Integral       "
 				SetVariable ZIsetVar,help={"Weights: the sum of recent errors. Larger values= errors eliminated more quickly, but with larger overshoot.\""}
-				SetVariable ZIsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":zPIDi", proc=StagePIDSetVarProc
+				SetVariable ZIsetVar,limits={-inf,inf,0}, value= PIDGet[%Z][%I]
 				SetVariable ZDsetVar,pos={(xOffset + 3),62},size={105,16},title="Derivative   "
-				SetVariable ZDsetVar,help={"Weights: rate the error has been changing. Larger value= less overshoot, but slower transient response, possible instability."}
-				SetVariable ZDsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":zPIDd", proc=StagePIDSetVarProc
-				// Buttons for Getting PID from stage encoder and reverting to default values
-				Button ZPIDupdateButton,pos={(xOffset + 4),85},size={50,20},title="Get", proc = Stages_FetchPIDButtonProc
-				Button ZPIDupdateButton,help={"Fetches the PID values currently set for the Z axis"}
-				Button ZPIDdefaultButton,pos={(xOffset + 61),85},size={50,20},title="default",proc =Stages_RevertPIDButtonProc
+				SetVariable ZDsetVar,help={"Weights: rate the error has been changing. Larger value = less overshoot, but slower transient response, possible instability."}
+				SetVariable ZDsetVar,limits={-inf,inf,0},value = PIDGet[%Z][%D]
+				// Buttons for Getting and Setting PID from stage encoder and reverting to default values
+				Button ZPIDgetButton,pos={(xOffset + 4),85},size={28,20},title="Get", proc = Stages_GetPIDButtonProc
+				Button ZPIDgetButton,help={"Fetches the PID values currently set for the Z axis"}
+				Button ZPIDsetButton,pos={(xOffset + 33),85.00},size={28.00,20.00},proc=Stages_SetPIDButtonProc,title="Set"
+				Button ZPIDsetButton,help={"Sets the PID values for the Z axis"}
+				Button ZPIDdefaultButton,pos={(xOffset + 63),85.00},size={48.00,20.00},proc=Stages_RevertPIDButtonProc,title="default"
 				Button ZPIDdefaultButton,help={"Sets the PID values for Z axis to default  values stored as constants in the stage-specific procedure file"}
-				pS=1; iS=1; dS=1
-				FetchPID ("Z", pS, iS, dS)
 			endif
-			if (hasAx)
+			if (Properties[%has_Ax])
 				xOffset += 115
 				// group box
 				GroupBox AxGrp,pos={(xOffset),0},size={115,110},title="Ax PID",fSize=16,fStyle=1
 				// Set variables for P, I, and D
+				// Set variables for P, I, and D
 				SetVariable APsetVar,pos={(xOffset + 3),26},size={105,16},title="Proportional"
 				SetVariable APsetVar,help={"Weights: the current error. Larger value = faster response, but greater instability and possible oscillation."}
-				SetVariable APsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":axPIDp", proc=StagePIDSetVarProc
+				SetVariable APsetVar,limits={-inf,inf,0},value= PIDGet[%A][%P]
 				SetVariable AIsetVar,pos={(xOffset + 3),44},size={105,16},title="Integral       "
 				SetVariable AIsetVar,help={"Weights: the sum of recent errors. Larger values= errors eliminated more quickly, but with larger overshoot.\""}
-				SetVariable AIsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":axPIDi", proc=StagePIDSetVarProc
+				SetVariable AIsetVar,limits={-inf,inf,0}, value= PIDGet[%A][%I]
 				SetVariable ADsetVar,pos={(xOffset + 3),62},size={105,16},title="Derivative   "
-				SetVariable ADsetVar,help={"Weights: rate the error has been changing. Larger value= less overshoot, but slower transient response, possible instability."}
-				SetVariable ADsetVar,limits={-inf,inf,0},value= $"root:packages:" + theStageEncoder + ":axPIDd", proc=StagePIDSetVarProc
-				// Buttons for Getting PID from stage encoder and reverting to default values
-				Button APIDupdateButton,pos={(xOffset + 4),85},size={50,20},title="Get", proc = Stages_FetchPIDButtonProc
-				Button APIDupdateButton,help={"Fetches the PID values currently set for the Axial axis"}
-				Button APIDdefaultButton,pos={(xOffset + 61),85},size={50,20},title="default",proc =Stages_RevertPIDButtonProc
+				SetVariable ADsetVar,help={"Weights: rate the error has been changing. Larger value = less overshoot, but slower transient response, possible instability."}
+				SetVariable ADsetVar,limits={-inf,inf,0},value = PIDGet[%A][%D]
+				// Buttons for Getting and Setting PID from stage encoder and reverting to default values
+				Button APIDgetButton,pos={(xOffset + 4),85},size={28,20},title="Get", proc = Stages_GetPIDButtonProc
+				Button APIDgetButton,help={"Fetches the PID values currently set for the Axial axis"}
+				Button APIDsetButton,pos={(xOffset + 33),85.00},size={28.00,20.00},proc=Stages_SetPIDButtonProc,title="Set"
+				Button APIDsetButton,help={"Sets the PID values for the Axial axis"}
+				Button APIDdefaultButton,pos={(xOffset + 63),85.00},size={48.00,20.00},proc=Stages_RevertPIDButtonProc,title="default"
 				Button APIDdefaultButton,help={"Sets the PID values for Axial axis to default  values stored as constants in the stage-specific procedure file"}
-				pS=1; iS=1; dS=1
-				FetchPID ("A", pS, iS, dS)
+				//FetchPID ("A", pS, iS, dS)
 			endif
 			break
 	endswitch
 	return 0
 End
 
-//*************************************************************************************************************
-// Sets a single P,I, or D value for a single axis, depending on setvariable that calls function
-// Last Modified Sep 13 by Jamie Boyd
-Function StagePIDSetVarProc(sva) : SetVariableControl
-	STRUCT WMSetVariableAction &sva
 
-	switch( sva.eventCode )
-		case 1: // mouse up
-		case 2: // Enter key
-		case 3: // Live update
-			string theStageEncoder = stringfromlist (0, sva.win, "_")
-			funcRef StageSetPID_Template SetPID = $"StageSetPID_" + theStageEncoder
-			// first letter of ctrlname is axis, 2nd letter is PID
-			string ctrlName = sva.ctrlname 
-			string theAxis = ctrlname [0]
-			string thePID = ctrlname [1]
-			strswitch (thePID)
-				case "P":
-					SetPID (theAxis, pS = sva.dval)
-					break
-				case "I":
-					SetPID (theAxis, iS = sva.dval)
-					break
-				case "D":
-					SetPID (theAxis, dS = sva.dval)
-					break
-				default:
-					doalert 0, "Error from StagePIDSetVarProc: was not expecting a control named \"" + ctrlName + "\"."
-					break
-			endSwitch
-			break
-	endswitch
-	return 0
-End
 
 //*************************************************************************************************************
-// Fetches all P,I, and D values for a single axis, depending on button that calls function
-// Last Modified Sep 13 by Jamie Boyd
-Function Stages_FetchPIDButtonProc(ba) : ButtonControl
+// Fetches all P, I, and D values for a single axis, depending on button that calls function
+// Last 2025/12/01 by Jamie Boyd
+Function Stages_GetPIDButtonProc(ba) : ButtonControl
 	STRUCT WMButtonAction &ba
 
 	switch( ba.eventCode )
 		case 2: // mouse up
 			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			funcRef StageFetchPID_Template FetchPID = $"StageFetchPID_" + theStageEncoder
-			variable pS=1, iS=1, dS=1
-			string ctrlName = ba.ctrlname
-			string theAxis = ctrlName [0]
-			FetchPID (theAxis, pS, iS, dS)
-			// No need to update global variables on control panel with pS, iS, and dS
-			// as the UpdateStage procedure should do this
+			string thectrlName =  ba.ctrlName
+			string theAxis =thectrlName [0]
+			SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+			WAVE Selected = $"root:packages:" + theStageEncoder + ":SelectedForCMD"
+			Selected = 0
+			Selected [%theAxis] = 1
+#ifdef STAGE_IS_THREADED
+			NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+			newdatafolder/s :tdata
+			variable/G theCmdG = kThreadFetchPID
+			duplicate Selected SelectedG
+			WaveClear SelectedG
+			ThreadGroupPutDF threadID, :
+#else
+			WAVE PIDget =  $"root:packages:" + theStageEncoder + ":PIDget"
+			WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
+			funcref StageFetchPID_Template fetchPID = $"StageFetchPID_" + theStageEncoder
+			fetchPID (thePort, Selected, PIDget, Properties)
+#endif
 			break
 	endswitch
 	return 0
 End
+
+
+//*************************************************************************************************************
+// Sets all P,I, and D values for a single axis, depending on button that calls function
+// Last 2025/12/01 by Jamie Boyd
+Function Stages_SetPIDButtonProc(ba) : ButtonControl
+	STRUCT WMButtonAction &ba
+
+	switch( ba.eventCode )
+		case 2: // mouse up
+			string theStageEncoder = stringfromlist (0, ba.win, "_")
+			string thectrlName =  ba.ctrlName
+			string theAxis =thectrlName [0]
+			SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+			WAVE Selected = $"root:packages:" + theStageEncoder + ":SelectedForCMD"
+			WAVE PIDget = $"root:packages:" + theStageEncoder + ":PIDGet"
+			Selected = 0
+			Selected [%theAxis] = 1
+#ifdef STAGE_IS_THREADED
+			NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+			newdatafolder/s :tdata
+			variable/G theCmdG = kThreadSetPID
+			duplicate Selected SelectedG
+			duplicate PIDget PIDsetG
+			WaveClear SelectedG, PIDsetG
+			ThreadGroupPutDF threadID, :
+#else
+			WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
+			funcRef StageSetPID_Template SetPID = $"StageSetPID_" + theStageEncoder
+			SetPID (thePort, Selected, PIDget, Properties)
+#endif
+			break
+	endswitch
+	return 0
+End
+
+
 
 //*************************************************************************************************************
 // Reverts all P,I, and D values for a single axis to default values saved as globals in device-specific procedure file
@@ -1253,15 +1804,379 @@ Function Stages_RevertPIDButtonProc(ba) : ButtonControl
 			funcRef StageSetPID_Template SetPID = $"StageSetPID_" + theStageEncoder
 			string ctrlName = ba.ctrlname
 			string theAxis = ctrlName [0]
-			NVAR/Z PIDpDef = $"root:packages:" + theStageEncoder + ":" + theAxis + "PIDpDef"
-			NVAR/Z PIDiDef = $"root:packages:" + theStageEncoder + ":" + theAxis + "PIDiDef"
-			NVAR/Z PIDdDef =$"root:packages:" + theStageEncoder + ":" + theAxis + "PIDdDef"
-			if (((NVAR_EXISTS (PIDpDef)) && (NVAR_EXISTS (PIDpDef))) && (NVAR_EXISTS (PIDiDef)))
-				SetPID (theAxis, pS = PIDpDef, iS = PIDiDef, dS =PIDdDef )
-			else
-				doAlert 0, "Default PID values were not found for the \"" + theAxis + "\" axis."
-			endif	
+			SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+			WAVE Selected = $"root:packages:" + theStageEncoder + ":SelectedForCMD"
+			WAVE PIDdefault = $"root:packages:" + theStageEncoder + ":PIDdefault"
+			Selected = 0
+			Selected [%theAxis] = 1
+			WAVE PIDset =  $"root:packages:" + theStageEncoder + ":PIDset"
+			PIDset = PIDdefault [%theAxis] [q]
+			WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
+			funcRef StageSetPID_Template SetPID = $"StageSetPID_" + theStageEncoder
+			SetPID (thePort, Selected, PIDset, Properties)
 			break
 	endswitch
 	return 0
 End
+
+
+// ***************************************************************************************************
+// ***************************** Functions for thread for threaded version *********************************
+// ***************************************************************************************************
+//******************* MNEMONIC CONSTANTS FOR STAGE COMMANDS FOR THREAD ********************************
+CONSTANT kThreadSetPort = 	0
+CONSTANT kThreadSetZero =	1
+CONSTANT kThreadGetPos = 	2
+CONSTANT kThreadGoToPos = 	3
+CONSTANT kThreadDoStep = 	4
+CONSTANT kThreadGetMvIncr = 	5
+CONSTANT kThreadSetMvIncr = 	6
+CONSTANT kThreadSetAuto = 	7
+CONSTANT kThreadUnSetAuto = 	8
+CONSTANT kThreadSetLock = 	9
+CONSTANT kThreadUnSetLock =	10
+CONSTANT kThreadResetIO = 	11
+CONSTANT kThreadSetPID = 	12
+CONSTANT kThreadFetchPID =	13
+
+#ifdef STAGE_IS_THREADED
+//***********************************************************
+// Function for the thread for a threaded stage, receives commands from a queue as they are posted
+// Last Modified 2025/12/18 by Jamie Boyd
+Threadsafe Function StagePThread(theStageEncoder, DistanceFromZero, Zeros, StepSizes, PIDVals, Properties)
+	String theStageEncoder		// name of stage encoder, all functions and datafolders use this name
+	WAVE DistanceFromZero		// contains current distances from zero for all axes - only one copy
+	WAVE Zeros					// contaons absolute position of zero for all axes, not used if zeroing is done by stage encoder - only one copy
+	WAVE stepSizes				// contains current step sizes for all axes - only one copy
+	WAVE PIDVals				// contains current PID values for all axes - onlyone copy, shared with thread
+	WAVE Properties				// contains info on various properties of stage encoder, for all axes
+
+	String thePort = ""		// serialport used by StageENcoder, set by a call to StagePThread
+	// function references for functions provided by stage encoder procedure
+	funcref StageSetzero_Template setZero = $"StageSetzero_" + theStageEncoder
+	funcref StageUpdate_Template StageUpdate=$"StageUpdate_" + theStageEncoder
+	funcref StageSetManual_template SetManualLock=$"StageSetManual_" + theStageEncoder
+	funcref StageResetIO_template ResetIO = $"StageResetIO_" + theStageEncoder
+	funcRef StageMoveRel_Template StageMoveRel = $"StageMoveRel_" + theStageEncoder
+	funcref StageMoveAbs_Template StageMoveAbs = $"StageMoveAbs_" + theStageEncoder
+	funcRef StageSetStepIncr_Template StageSetInc = $"StageSetStepIncr_" + theStageEncoder
+	funcRef StageGetStepIncr_Template StageGetInc = $"StageGetStepIncr_" + theStageEncoder
+	Funcref StageFetchPID_Template StageFetchPID = $"StageFetchPID_"  + theStageEncoder
+	Funcref StageSetPID_Template StageSetPID = $"StageSetPID_"  + theStageEncoder
+	Funcref StageMonitorFunc_Template StageMonitor = $"StageMonitorFunc_" + theStageEncoder
+
+	// Auto update
+	variable autoUpdate=0								// variable used to indicate when autoUpdate (1) or monitor to position (2) is on
+	variable autoTodo
+	variable autoUpdateBup
+	variable autoUpdateMS = kAUTO_UPDATE_INT*1000		// milliseconds between updates when autoUpdate is on, set by constant at top of file
+
+	make/FREE/n=4 autoSelected				// wave for axis selection when autoupdate is on - all available axes are selected
+	make/FREE/n=4 localMoveTo
+	setDimLabel 0, 0, X, autoSelected,localMoveTo
+	setDimLabel 0, 1, Y, autoSelected,localMoveTo
+	setDimLabel 0, 2, Z, autoSelected,localMoveTo
+	setDimLabel 0, 3, A, autoSelected,localMoveTo
+
+
+	// infinite loop that gets and processes commands posted to the thread
+	for (;;)
+		if (autoUpdate)
+			DFREF dfr = ThreadGroupGetDFR(0,autoUpdateMS)
+			if (!(DataFolderRefStatus(dfr)))				// we don't have a command to process, but it is time to do an update
+				if (autoUpdate & 1)
+					Properties[%BUSY]=1
+					StageUpdate(thePort, autoSelected, DistanceFromZero, Zeros, Properties)
+					Properties[%BUSY]=0
+				endif
+				if (autoUpdate & 2)
+					autoToDo = StageMonitor (thePort, autoToDo, localMoveTo, DistanceFromZero)
+					if (autoToDo == 0)
+						autoUpdate = autoUpdateBup
+					endif
+				endif
+				continue
+			endif
+		else
+			DFREF dfr = ThreadGroupGetDFR(0,INF)	// get the command
+			Properties[%BUSY]=1
+		endif
+		NVAR theCmd = dfr:theCmdG
+		Switch (theCmd)
+			case kThreadSetAuto:
+				if (Properties [%has_XY])
+					autoSelected [%X] = 1
+					autoSelected [%Y] = 1
+				endif
+				if (Properties [%has_Z])
+					autoSelected [%Z] = 1
+				endif
+				if (Properties [%has_Ax])
+					autoSelected [%A] = 1
+				endif
+				autoUpdate = autoUpdate | 1
+				break
+			case kThreadUnSetAuto:
+				autoUpdate = autoUpdate & ~1
+				break
+			case kThreadSetPort:		 // set port used by stage encoder
+				SVAR thePortG =  dfr:thePortG
+				thePort = thePortG
+				//print "thePort = ", thePort
+				break
+			case kThreadSetZero: 		// set zero position for all axes
+				WAVE Selected = dfr:SelectedG
+				setZero (thePort, Selected, DistanceFromZero, Zeros, Properties)
+				break
+			case kThreadResetIO:
+				ResetIO (thePort, Properties)
+				break
+			case kThreadGetPos:			// get position for selected axes
+				WAVE Selected = dfr:SelectedG
+				StageUpdate (thePort, Selected, DistanceFromZero, Zeros, Properties)
+				break
+			case kThreadSetLock:
+				SetManualLock (thePort, 1, Properties)
+				break
+			case kThreadUnSetLock:
+				SetManualLock (thePort, 0, Properties)
+				break
+			case kThreadSetMvIncr:
+				WAVE Selected = dfr:SelectedG
+				WAVE StepSizestoSet = dfr:StepSizesG
+				StageSetInc (thePort, selected, StepSizestoSet, Properties)
+				break
+			case kThreadGetMvIncr:
+				StageGetInc (thePort, selected, StepSizes, Properties)
+				break
+			case kThreadDoStep:
+				NVAR returnWhen = dfr:returnWhenG
+				WAVE Selected = dfr:SelectedG
+				StageMoveRel (thePort, returnWhen, Selected, StepSizes, DistanceFromZero, Properties)
+				if (returnWhen == kStagesReturnBkg)		// check with thread
+					localMoveTo = DistanceFromZero + StepSizes * Selected
+					autoToDo = 0
+					if (Selected [%X])
+						autoToDo += 1
+					endif
+					if (Selected [%Y])
+						autoToDo += 2
+					endif
+					if (Selected [%Z])
+						autoToDo += 4
+					endif
+					if (Selected [%A])
+						autoToDo += 8
+					endif
+					autoUpdateBup = (autoUpdate & 1)
+					autoUpdate = 2
+				endif
+				break
+			case kThreadGoToPos:
+				NVAR returnWhen = dfr:returnWhenG
+				WAVE Selected = dfr:SelectedG
+				WAVE MoveTo = dfr:MoveToG
+				StageMoveAbs (thePort, kStagesReturnNow, Selected, MoveTo, DistanceFromZero, Properties)
+				if (returnWhen == kStagesReturnBkg)
+					autoToDo = 0
+					if (Selected [%X])
+						autoToDo += 1
+					endif
+					if (Selected [%Y])
+						autoToDo += 2
+					endif
+					if (Selected [%Z])
+						autoToDo += 4
+					endif
+					if (Selected [%A])
+						autoToDo += 8
+					endif
+					autoUpdateBup = (autoUpdate & 1)
+					autoUpdate = 2
+					localMoveTo = MoveTo
+				endif
+				break
+			case kThreadSetPID:
+				WAVE Selected = dfr:SelectedG
+				WAVE PID_Set = dfr:PID_SetG
+				StageSetPID(thePort, Selected, PID_Set, Properties)
+				break
+			case kThreadFetchPID:
+				WAVE Selected = dfr:SelectedG
+				StageFetchPID(thePort, Selected, PIDVals, Properties)
+				break
+		endswitch
+		Properties[%BUSY]=0
+	endfor
+end
+#endif
+
+//***********************************************************
+// Stops the thread for a threaded stage, sometimes needed when procedures are recompiled while stage is active
+// Last Modified 2025/11/26 by Jamie Boyd
+Function StageStopThread()
+	string theStageEncoder
+	string encoderList=StageListOpen()
+	variable Nencoders=ItemsInList(encoderList, ";")
+
+	if (Nencoders == 0)
+		return 0
+	elseif (Nencoders==1)
+		theStageEncoder = StringFromList(0, encoderList, ";")
+	elseif (Nencoders > 1)
+		Prompt theStageEncoder, "Stops a Stage Encoder thread", popup, encoderList
+		DoPrompt /HELP="Stops the thread for a stage encoder." "Choose an open Stage Encoder", theStageEncoder
+		if (V_Flag == 1)
+			return 0
+		endif
+	endif
+	NVAR threadID= $"root:packages:" + theStageEncoder + ":stageThread"
+	variable Result = ThreadGroupRelease(threadID)
+	if (Result)
+		printf "Stage Thread for %s was not stopped.\r", theStageEncoder
+	endif
+end
+
+
+//***********************************************************
+// Lists stage encoders in use. Normally there is only one in use at a time
+// Last Modified 2025/11/26 by Jamie Boyd
+Function/S StageListOpen()
+	string rList=""
+	string aFolder, fList = GUIPListObjs ("root:packages:", 4, "*", 0, "")
+	variable ifolder, nFolders = itemsinlist(fList, ";")
+	for (ifolder=0;ifolder < nfolders; iFolder +=1)
+		aFolder= StringFromList(iFOlder, fList, ";")
+		SVAR/z thePort = $"root:packages:" + aFolder + ":thePort"
+		if (SVAR_Exists(thePort))
+			rList=AddListItem(aFolder, rList, ";")
+		endif
+	endfor
+	return rList
+end
+
+
+
+// **********************************************************************************************************************
+// **************** Some functions for move and update that are more easily called from other code **************
+// **********************************************************************************************************************
+
+
+// **********************************************************************************************************************
+// Pass by reference variables. Set ones you don't want updated to NaN. When function returns, values will be updated
+// last modified 2025/12/19 by Jamie Boyd
+Function Stage_UpdateXYZ (theStageEncoder, xVal, yVal, zVal)
+	String theStageEncoder
+	Variable &xVal
+	variable &yVal
+	Variable &zVal
+
+	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
+	WAVE selectedForCMD = $"root:packages:" + theStageEncoder + ":selectedForCMD"
+	WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	WAVE Zeros = $"root:packages:" + theStageEncoder + ":absoluteZero"
+	WAVE Properties =  $"root:packages:" + theStageEncoder + ":Properties"
+
+	if (numtype (xVal) == 0)
+		selectedForCMD [%X] = 1
+	endif
+	if (numtype (yVal) == 0)
+		selectedForCMD [%Y] = 1
+	endif
+	if (numtype (zVal) == 0)
+		selectedForCMD [%Z] = 1
+	endif
+
+#ifdef STAGE_IS_THREADED
+	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
+	newdatafolder/s :tdata
+	variable/G theCmdG = kThreadGetPos
+	duplicate selectedForCMD selectedG
+	WaveClear selectedG
+	ThreadGroupPutDF threadID, :
+	do
+		sleep/S 0.05
+	while (Properties [%BUSY])
+#else
+	funcref  StageUpdate_Template StageUpdate=$"StageUpdate_" + theStageEncoder
+	StageUpdate (thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
+#endif
+	if (numtype (xVal) == 0)
+		xVal = DistsFromZero[%X]
+	endif
+	if (numtype (yVal) == 0)
+		yVal = DistsFromZero[%Y]
+	endif
+	if (numtype (zVal) == 0)
+		zVal = DistsFromZero[%Y]
+	endif
+end
+
+// **********************************************************************************************************************
+// Just for XY. Pass by reference for X and Y
+// last modified 2025/12/19 by Jamie Boyd
+Function Stage_UpdateXY (theStageEncoder, xVal, yVal)
+	string theStageEncoder
+	Variable &xVal
+	variable &yVal
+
+	xval = 1
+	yval = 1
+	variable zVal = NaN
+	Stage_UpdateXYZ (theStageEncoder, xVal, yVal, zVal)
+end
+
+
+// **********************************************************************************************************************
+// just for Z. Zval is returned, no need for pass by reference
+Function Stage_UpdateZ (theStageEncoder)
+	string theStageEncoder
+
+	Variable zVal = 1
+	variable xVal = NaN
+	variable yVal = Nan
+	Stage_UpdateXYZ (theStageEncoder, xVal, yVal, zVal)
+	return zVal
+
+end
+
+
+
+
+
+
+Function StageGoToXY (theStageEncoder, Xpos, yPos)
+	string theStageEncoder
+	variable  Xpos, yPos
+end
+
+Function StageGoToZ (theStageEncoder, Zpos)
+	string theStageEncoder
+	variable Zpos
+end
+
+Function StageGoToXYZ (theStageEncoder, Xpos, yPos, zPos)
+	string theStageEncoder
+	variable  Xpos, yPos, zPos
+end
+
+
+
+
+
+Function StageHasError (theStageEncoder)
+	string theStageEncoder
+
+end
+
+Function StageRestIO (theStageEncoder)
+	string theStageEncoder
+end
+
+
+
+Function testIt ()
+	variable xVal, yVal
+	Stage_UpdateXY ("Microcode2", xVal, yVal)
+	printf "Y axis is at %.3W1Pm and X axis is at %.3W1Pm\r", yVal, xVal
+end
