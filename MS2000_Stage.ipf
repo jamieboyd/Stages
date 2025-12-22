@@ -119,7 +119,7 @@ STATIC CONSTANT DISABLE_MANUAL =	75		// 	X_AXIS DISABLE_MANUAL 0 COMMAND_END				
 //*********************************************************************************************  
 // Convert 3 bytes, least significant to highest, using 2's complement, to a standard floating point
 // Last modified 2025/12/15 by Jamie Boyd
-Threadsafe Function From3b2cToFlt (lsb, mb, msb)
+Threadsafe Function From3b2cToFlt(lsb, mb, msb)
 	variable lsb, mb, msb
 	
 	make/FREE/n=3 byteWave
@@ -132,7 +132,7 @@ end
 //*********************************************************************************************
 // converts a standard floating point number to three bytes, using 2's complement notation
 // Last Modified 2025/12/15 by Jamie Boyd
-Threadsafe Function FromFltTo3b2c (theVal,lsb, mb, msb)
+Threadsafe Function FromFltTo3b2c(theVal,lsb, mb, msb)
 	variable theVal, &lsb, &mb, &msb
 	
 	make/FREE/n=3 byteWave
@@ -151,7 +151,7 @@ end
 // Set global variables
 // these waves are created by Stage_MakeGlobals 
 // Last Modified 2025/12/15 by Jamie Boyd
-Function StageInitGlobals_MS2000 ()
+Function StageInitGlobals_MS2000()
 	
 	WAVE Properties =  root:packages:MS2000:Properties
 	WAVE Polarity =  root:packages:MS2000:Polarity
@@ -170,15 +170,12 @@ Function StageInitGlobals_MS2000 ()
 	polarity[%X] = kMS2000Xpol
 	polarity[%Y] = kMS2000Ypol
 	polarity[%Z] = kMS2000Zpol
-	StepSize [%X] = kMS2000XYstepSize * 10
-	StepSize [%Y] = kMS2000XYstepSize * 10
-	StepSize [%Z] = kMS2000ZstepSize
 end
 
 //*********************************************************************************************
 // Opens the serial port for use with MS2000
 // Last Modified 2025/12/15 by Jamie Boyd
-Function StageSetUpPort_MS2000 (thePortName)
+Function StageSetUpPort_MS2000(thePortName)
 	string thePortName
 	
 	// Configure port, open it, and clear buffer
@@ -193,7 +190,7 @@ end
 //*********************************************************************************************
 // Port closing function for MS2000, tells VDT2 to close the serial port
 // Last Modified 2025/12/15 by Jamie Boyd
-Function StageClose_MS2000 (thePortName)
+Function StageClose_MS2000(thePortName)
 	string thePortName // Name of the serial port
 	
 	CtrlNamedBackground BKG_MS2000, STOP
@@ -210,7 +207,7 @@ end
 // add to the stage control panel things specific to MS2000
 // Adds a reset button, a stop button, and a button to get step sizes
 // Last Modified 2025/12/19 by Jamie Boyd
-Function StageAddControls_MS2000 (hOffset, vOffset, thePanel)
+Function StageAddControls_MS2000(hOffset, vOffset, thePanel)
 	variable hOffset, vOffset
 	string thePanel
 
@@ -279,35 +276,23 @@ End
 // Gets step size increments for all axes from stage encoder, and updates the
 // StepSize wave. Most encoders don't store step sizes so we make a special
 // button for it for the MS-20000
-// Last Modified 2025/12/19 by Jamie Boyd
+// Last Modified 2025/12/20 by Jamie Boyd
 Function StageGetStepSize_MS2000ButtonProc(ba) : ButtonControl
 	STRUCT WMButtonAction &ba
 
 	switch( ba.eventCode )
 		case 2: // mouse up
-			SVAR thePort = root:packages:MS2000:thePort
+			
 			WAVE Properties = root:packages:MS2000:Properties
-			WAVE stepsize = root:packages:MS2000:StepSize
-			WAVE selectedForCMD = root:packages:MS2000:selectedForCMD
-			NVAR stageIsThreaded = root:packages:MS2000:stageIsThreaded
-			selectedForCMD =0
+			variable axesBits = 0
 			if (Properties [%has_XY])
-				selectedForCMD [%X] =1
-				selectedForCMD [%Y] =1
+				axesBits += kXbit
+				axesBits += kYbit
 			endif
 			if (Properties [%has_Z])
-				selectedForCMD [%Z] =1
+				axesBits += kZbit
 			endif
-			if (stageIsThreaded)
-				NVAR threadID = $"root:packages:MS2000:stageThread"
-				newdatafolder/s :tdata
-				variable/G theCmdG = kThreadGetMvIncr
-				duplicate selectedForCMD selectedG
-				WAVEClear selectedG
-				ThreadGroupPutDF threadID, :
-			else
-				StageGetStepIncr_MS2000 (thePort, selectedForCMD, StepSize, Properties)
-			endif
+			StageGetIncrement ("MS2000", AxesBits, 0)
 			break
 	endswitch
 	return 0
@@ -317,7 +302,7 @@ End
 //*********************************************************************************************
 // Reset I/O function for MS2000, clears any pending commands
 // Last Modified 2025/12/15 by Jamie Boyd
-Threadsafe Function StageResetIO_MS2000 (thePort, Properties)
+Threadsafe Function StageResetIO_MS2000(thePort, Properties)
 	string thePort // Name of the serial port
 	WAVE Properties
 	
@@ -331,7 +316,7 @@ end
 //*******************************************************************************
 // Sets the current position to be Zero, i.e.distance from home = 0
 // Last Modified 2025/12/15 by Jamie Boyd
-Threadsafe Function StageSetZero_MS2000 (thePort, DistsFromZero, Zeros, Properties)
+Threadsafe Function StageSetZero_MS2000(thePort, DistsFromZero, Zeros, Properties)
 	string thePort
 	WAVE DistsFromZero
 	WAVE Zeros
@@ -360,7 +345,7 @@ End
 //*********************************************************************************************
 // Stage update function for Applied Scientific's MS-2000 stage encoders
 // Last Modified 2025/12/15 by Jamie Boyd
-Threadsafe Function StageUpdate_MS2000 (thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
+Threadsafe Function StageUpdate_MS2000(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
 	string thePort
 	WAVE selectedForCMD
 	WAVE DistsFromZero

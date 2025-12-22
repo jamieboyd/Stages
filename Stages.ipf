@@ -482,7 +482,7 @@ Function StageUpdate(theStageEncoder, AxisBits, waitForResult)
 end
 
 // *******************************************************************************
-// Gets axis position by reading from global wave in data folder
+// Gets current axis position by reading from global wave in data folder
 // last modified: 2025/12/19 by Jamie Boyd
 Function StageGetAxisPos (theStageEncoder, AxisStr)
 	string theStageEncoder
@@ -607,11 +607,12 @@ Function StageSetManual(theStageEncoder, setLock)
 end
 
 // *******************************************************************************
-// 
-function StageSetIncrement (theStageEncoder, AxisStr, Increment, doWait)
+// Sets the step size that will be used for the StageStep procedure, for movements relative to the current position
+// last modified: 2025/12/19 by Jamie Boyd
+function StageSetIncrement(theStageEncoder, AxisStr, Increment, doWait)
 	string theStageEncoder
-	string AxisStr
-	variable increment
+	string AxisStr			// One of X, Y, Z, or A
+	variable increment		// step size, in metres. Always positive
 	variable doWait
 	
 	WAVE selected = $"root:packages:" + theStageEncoder + ":selectedForCMD"
@@ -641,8 +642,10 @@ function StageSetIncrement (theStageEncoder, AxisStr, Increment, doWait)
 #endif
 end
 
+
 // *******************************************************************************
-// 
+// Gets the step size set on the Device for selected axes, and writes them to the StepSizes wave
+// last modified: 2025/12/19 by Jamie Boyd
 function StageGetIncrement (theStageEncoder, AxisBits, Increment, doWait)
 	string theStageEncoder
 	variable axisBits
@@ -671,7 +674,7 @@ function StageGetIncrement (theStageEncoder, AxisBits, Increment, doWait)
 	duplicate selected selectedG
 	WAVEClear selectedG
 	ThreadGroupPutDF threadID, :
-	if (waitForResult)  // if threaded, it will take time for result to be placed in Distance wave
+	if (waitForResult)  // if threaded, it will take time for result to be placed in incremenr wave
 		do
 			sleep/S 0.05
 		while (Properties [%BUSY])
@@ -685,13 +688,26 @@ function StageGetIncrement (theStageEncoder, AxisBits, Increment, doWait)
 #endif
 end
 
+// *******************************************************************************
+// Gets axis stepSize by reading from global wave in data folder
+// last modified: 2025/12/19 by Jamie Boyd
+Function StageGetAxisStepSize(theStageEncoder, AxisStr)
+	string theStageEncoder
+	String AxisStr // one of X,Y,Z,A
+	
+	WAVE StepSize = $"root:packages:" + theStageEncoder + ":StepSize"
+	return StepSize[%$AxisStr]
+end
+
 
 // *******************************************************************************
-// 
-Function StageStep (theStageEncoder, theAxis, Direction, returnWhen)
+// Commands the Device to move theAxis a single step, size defined by StageSetIncrement, 
+// in the positive or negative direction
+// last modified: 2025/12/19 by Jamie Boyd
+Function StageStep(theStageEncoder, theAxis, Direction, returnWhen)
 	String theStageEncoder
-	String theAxis
-	variable Direction // must be 1 or -1
+	String theAxis		// one of X,Y,Z,A
+	variable Direction  // must be +1 (positive going step) or  -1 (negative going step)
 	variable returnWhen
 	// set selected axis in selected wave and set polarity
 	WAVE Selected =  $"root:packages:" + theStageEncoder + ":selectedForCMD"
@@ -721,11 +737,14 @@ Function StageStep (theStageEncoder, theAxis, Direction, returnWhen)
 #endif
 end
 
-
-Function StagesSetAbs (theStageEncoder, axisBits, moveToWave, returnWhen)
+// *******************************************************************************
+// Commands the Device to move selected axes to an absolute position, i.e., defined as
+// distance from the axis 0 position
+// last modified: 2025/12/19 by Jamie Boyd
+Function StagesSetAbs(theStageEncoder, axisBits, moveToWave, returnWhen)
 	string theStageEncoder
-	variable axisBits
-	WAVE moveToWave
+	variable axisBits		// bit wise combination, X = 1, Y = 2, Z = 4, A = 8 
+	WAVE moveToWave			// 4 point wave with dimension labels X, Y, Z, and A
 	variable returnWhen
 	
 	// selected
@@ -766,8 +785,11 @@ Function StagesSetAbs (theStageEncoder, axisBits, moveToWave, returnWhen)
 #endif
 end
 
-
-Function StagesSetAbsAxis (theStageEncoder, anAxis, moveToPos, returnWhen)
+// *******************************************************************************
+// Commands the Device to move selected a single axis to an absolute position, 
+// i.e., defined as distance from the axis 0 position
+// last modified: 2025/12/19 by Jamie Boyd
+Function StagesSetAbsAxis(theStageEncoder, anAxis, moveToPos, returnWhen)
 	string theStageEncoder
 	string anAxis
 	variable moveToPos
