@@ -55,224 +55,6 @@ Menu "Macros"
 end
 #endif
 
-// To write a procedure for a stage controller device, implement the following templates, as appropriate
-
-//****************************************************************************************************************************************************
-//***************************************Templates for Initialization functions **********************************************************************
-//****************************************************************************************************************************************************
-// Template for function to set global variables for the Stage encoder.
-// The globals will be made by StageMakeGlobals procedure
-Function StageInitGlobals_Template()
-	return 0
-end
-
-//*************************************************************************************************
-//Template for Stage Setup function - Stage procedure will open and initialize serial port with correct Baud and other settings
-Function StageSetUpPort_Template(thePortName)
-	string thePortName // Name of the serial port
-end
-
-
-//*************************************************************************************************
-//Template for Stage Close functions -  Stage procedure will close the port, do anything else it needs to do
-Function StageClose_Template(thePortName)
-	string thePortName // Name of the serial port
-end
-
-
-//**********************************************************************************************************************************
-//******************* Templates for Threadsafe functions for things that can be done from the thread *******************************
-//**********************************************************************************************************************************
-
-//*************************************************************************************************
-// Template for function to reset I/O, clearing any buffers
-Threadsafe Function StageResetIO_Template(thePortName, Properties)
-	string thePortName // Name of the serial port
-	WAVE Properties
-end
-
-
-//*************************************************************************************************
-// Template for function to set zero position, i.e., zero the stage encoders for all supported axes
-Threadsafe Function StageSetZero_Template(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
-	string thePort
-	WAVE selectedForCMD
-	WAVE DistsFromZero
-	WAVE Zeros
-	WAVE Properties
-end
-
-
-//*************************************************************************************************
-// Template for Stage Update functions - the funcref should never resolve to this template function
-Threadsafe Function StageUpdate_Template(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
-	string thePort
-	WAVE selectedForCMD
-	WAVE DistsFromZero
-	WAVE Zeros
-	WAVE Properties
-
-	print "You do not have stage encoders configured properly."
-end
-
-
-//*************************************************************************************************
-// Template for Stage Move function that moves a step relative to current position, which stage procedures for controllable stages must provide
-// if they don't support relative movement, use DistsFromZero to translate into absolute movement
-// the funcref should never resolve to this template function
-Threadsafe Function StageMoveRel_Template(thePort, doVerify, selectedForCMD, StepSize, DistsFromZero, Properties)
-	String thePort
-	Variable doVerify		// 0 to not verify movement, just assume we do.
-	WAVE selectedForCMD
-	Wave StepSize
-	WAVE DistsFromZero
-	WAVE Properties
-
-	print "You do not have stage encoders configured properly."
-end
-
-
-//*************************************************************************************************
-// Template for Stage Move function that moves to an absolute position, which stage procedures for controllable stages must provide
-// the funcref should never resolve to this template function
-Threadsafe Function StageMoveAbs_Template(thePort, doVerify, selectedForCMD, MoveTo, DistsFromZero, Properties)
-	String thePort
-	variable doVerify
-	Wave selectedForCMD
-	WAVE MoveTo
-	WAVE DistsFromZero
-	WAVE Properties
-
-	print "You do not have stage encoders configured properly."
-end
-
-//*************************************************************************************************
-// Template for a function that reports which axes have been moved to their target locations
-// to be used by the thread. Can also be called from the moveRel, moveAbs functions, and from background function
-// returns a bitwise combo of active axes 1=x, 2=y, 4=Z, 8=A
-Threadsafe Function StageMonitorFunc_Template(thePort, axesBits, MoveTo, DistsFromZero)
-	String thePort
-	variable axesBits	//bitwise combo of axes that need checking 1=x, 2=y, 4=Z, 8=A
-	WAVE MoveTo
-	WAVE DistsFromZero
-end
-
-
-// ************************************************************************************************************
-// Template for a special background task for use with threaded stage operation. You need to occasionally "touch"
-// the waves in the datafolder for the stage in order for the values in the control panel to be updated.
-// Adding zero to any point in the wave is an adequate way to do this
-// Not needed if you can live with the control panel being out of date
-// FYI: bringing another window to the front, then bringing the control panel to the front again will also update control panel values
-Function StageBkgTouch_Template(WMS)
-	STRUCT WMBackgroundStruct &WMS
-end
-
-
-//**********************************************************************************************************************************
-//************************* Support for background tasks when Stage is not threaded ***********************************************
-//**********************************************************************************************************************************
-
-
-// ******************************************************************************
-// Template for a function that uses a background task to continuously update axes positions, for non-threaded use,
-Function StageBkgUpdate_Template(bks)
-	STRUCT StageBkgStruct &bks
-end
-
-// ******************************************************************************
-// Template for function that uses a background task to continuously update axes positions, for non-threaded use,
-Function StageBkgMonitor_Template(bks)
-	STRUCT StageBkgStruct &bks
-end
-
-//*******************************************************************************
-// structure for background function with extra fields for monitoring positions
-// Last modified 2025/11/26 by Jamie Boyd
-STRUCTURE StageBkgStruct
-STRUCT WMBackgroundStruct WMS
-uint32 axesBits		// bitwise combo of axes to monitor, 1=X, 2=Y, 4=Z, 8=Ax
-float targets [4]	//when monitoring position, the coordinates we are approaching, X,Y,Z,A
-EndStructure
-
-
-//*********************************************************************************************************************************************************************
-//****************Templates for various functions which stage procedures may or may not provide, depending on their feature set***********************
-//*********************************************************************************************************************************************************************
-
-
-//*************************************************************************************************
-// Template for optional function to add special controls for a particular stage encoder to a control panel
-// X and Y offset refer to point offsets to position controls on control panel
-Function StageAddControls_Template(xOffset, yOffset, thePanel)
-	variable xOffset, yOffset
-	string thePanel
-end
-
-// *********************************************************************************************
-// Template for Setting increment for steps, used when stored on the stage encoder
-ThreadSafe Function StageSetStepIncr_Template(thePort, selectedForCMD, StepSize, Properties)
-	string thePort
-	WAVE selectedForCMD
-	WAVE StepSize
-	WAVE Properties
-end
-
-
-// *********************************************************************************************
-// Template for Getting increment for steps, used when stored on the stage encoder
-ThreadSafe Function StageGetStepIncr_Template(thePort, selectedForCMD, StepSize, Properties)
-	string thePort
-	WAVE selectedForCMD
-	WAVE StepSize
-	WAVE Properties
-end
-
-
-//*************************************************************************************************
-// Template for function to lock joystick to stop manual movement of stage encoder
-Threadsafe Function StageSetManual_template(thePort, doLock, Properties)
-	string thePort
-	variable doLock //1 to lock manual movement of stage, 0 to unlock
-	WAVE Properties
-end
-
-
-
-//*************************************************************************************************
-// Template for function to add special controls for a particular stage encoder to the PID panel
-// X and Y offset refer to point offsets to position controls on control panel
-// returns the amount of extra vertical space it added. The function needs to resize the control panel as needed
-Function StageAddPIDControls_Template(Axis, xOffset, yOffset, thePanel)
-	string Axis // X, Y, or Z will be called indepentently
-	variable xOffset, yOffset
-	string thePanel
-
-	return 1
-end
-
-
-//*************************************************************************************************
-// Template for function to fetch PID values
-Threadsafe Function StageFetchPID_Template(thePort, SelectedForCMD, PIDget, Properties)
-	string thePort
-	WAVE SelectedForCMD
-	WAVE PIDGet
-	Wave Properties
-	print "You do not have PID functions configured properly"
-	return 1
-end
-
-//*************************************************************************************************
-// Template for function to set PID values
-Threadsafe Function StageSetPID_Template(thePort, SelectedForCMD, PIDset, Properties)
-	string thePort
-	WAVE SelectedForCMD
-	WAVE PIDset
-	WAVE Properties
-
-	return 1
-end
 
 
 // *************************************************** Functions for Stage Management ***********************************************
@@ -646,10 +428,9 @@ end
 // *******************************************************************************
 // Gets the step size set on the Device for selected axes, and writes them to the StepSizes wave
 // last modified: 2025/12/19 by Jamie Boyd
-function StageGetIncrement (theStageEncoder, AxisBits, Increment, doWait)
+function StageGetIncrement (theStageEncoder, AxisBits, doWait)
 	string theStageEncoder
 	variable axisBits
-	variable increment
 	variable doWait
 	
 	WAVE selected = $"root:packages:" + theStageEncoder + ":selectedForCMD"
@@ -813,6 +594,226 @@ Function StagesSetAbsAxis(theStageEncoder, anAxis, moveToPos, returnWhen)
 	make/FREE/n=4 moveTo
 	moveTo[%$anAxis] = moveToPos
 	StagesSetAbs (theStageEncoder, axisBits, moveTo, returnWhen)
+end
+
+// To write a procedure for a stage controller device, implement the following templates, as appropriate
+
+//****************************************************************************************************************************************************
+//***************************************Templates for Initialization functions **********************************************************************
+//****************************************************************************************************************************************************
+// Template for function to set global variables for the Stage encoder.
+// The globals will be made by StageMakeGlobals procedure
+Function StageInitGlobals_Template()
+	return 0
+end
+
+//*************************************************************************************************
+//Template for Stage Setup function - Stage procedure will open and initialize serial port with correct Baud and other settings
+Function StageSetUpPort_Template(thePortName)
+	string thePortName // Name of the serial port
+end
+
+
+//*************************************************************************************************
+//Template for Stage Close functions -  Stage procedure will close the port, do anything else it needs to do
+Function StageClose_Template(thePortName)
+	string thePortName // Name of the serial port
+end
+
+
+//**********************************************************************************************************************************
+//******************* Templates for Threadsafe functions for things that can be done from the thread *******************************
+//**********************************************************************************************************************************
+
+//*************************************************************************************************
+// Template for function to reset I/O, clearing any buffers
+Threadsafe Function StageResetIO_Template(thePortName, Properties)
+	string thePortName // Name of the serial port
+	WAVE Properties
+end
+
+
+//*************************************************************************************************
+// Template for function to set zero position, i.e., zero the stage encoders for all supported axes
+Threadsafe Function StageSetZero_Template(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
+	string thePort
+	WAVE selectedForCMD
+	WAVE DistsFromZero
+	WAVE Zeros
+	WAVE Properties
+end
+
+
+//*************************************************************************************************
+// Template for Stage Update functions - the funcref should never resolve to this template function
+Threadsafe Function StageUpdate_Template(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
+	string thePort
+	WAVE selectedForCMD
+	WAVE DistsFromZero
+	WAVE Zeros
+	WAVE Properties
+
+	print "You do not have stage encoders configured properly."
+end
+
+
+//*************************************************************************************************
+// Template for Stage Move function that moves a step relative to current position, which stage procedures for controllable stages must provide
+// if they don't support relative movement, use DistsFromZero to translate into absolute movement
+// the funcref should never resolve to this template function
+Threadsafe Function StageMoveRel_Template(thePort, doVerify, selectedForCMD, StepSize, DistsFromZero, Properties)
+	String thePort
+	Variable doVerify		// 0 to not verify movement, just assume we do.
+	WAVE selectedForCMD
+	Wave StepSize
+	WAVE DistsFromZero
+	WAVE Properties
+
+	print "You do not have stage encoders configured properly."
+end
+
+
+//*************************************************************************************************
+// Template for Stage Move function that moves to an absolute position, which stage procedures for controllable stages must provide
+// the funcref should never resolve to this template function
+Threadsafe Function StageMoveAbs_Template(thePort, doVerify, selectedForCMD, MoveTo, DistsFromZero, Properties)
+	String thePort
+	variable doVerify
+	Wave selectedForCMD
+	WAVE MoveTo
+	WAVE DistsFromZero
+	WAVE Properties
+
+	print "You do not have stage encoders configured properly."
+end
+
+//*************************************************************************************************
+// Template for a function that reports which axes have been moved to their target locations
+// to be used by the thread. Can also be called from the moveRel, moveAbs functions, and from background function
+// returns a bitwise combo of active axes 1=x, 2=y, 4=Z, 8=A
+Threadsafe Function StageMonitorFunc_Template(thePort, axesBits, MoveTo, DistsFromZero)
+	String thePort
+	variable axesBits	//bitwise combo of axes that need checking 1=x, 2=y, 4=Z, 8=A
+	WAVE MoveTo
+	WAVE DistsFromZero
+end
+
+
+// ************************************************************************************************************
+// Template for a special background task for use with threaded stage operation. You need to occasionally "touch"
+// the waves in the datafolder for the stage in order for the values in the control panel to be updated.
+// Adding zero to any point in the wave is an adequate way to do this
+// Not needed if you can live with the control panel being out of date
+// FYI: bringing another window to the front, then bringing the control panel to the front again will also update control panel values
+Function StageBkgTouch_Template(WMS)
+	STRUCT WMBackgroundStruct &WMS
+end
+
+
+//**********************************************************************************************************************************
+//************************* Support for background tasks when Stage is not threaded ***********************************************
+//**********************************************************************************************************************************
+
+
+// ******************************************************************************
+// Template for a function that uses a background task to continuously update axes positions, for non-threaded use,
+Function StageBkgUpdate_Template(bks)
+	STRUCT StageBkgStruct &bks
+end
+
+// ******************************************************************************
+// Template for function that uses a background task to continuously update axes positions, for non-threaded use,
+Function StageBkgMonitor_Template(bks)
+	STRUCT StageBkgStruct &bks
+end
+
+//*******************************************************************************
+// structure for background function with extra fields for monitoring positions
+// Last modified 2025/11/26 by Jamie Boyd
+STRUCTURE StageBkgStruct
+STRUCT WMBackgroundStruct WMS
+uint32 axesBits		// bitwise combo of axes to monitor, 1=X, 2=Y, 4=Z, 8=Ax
+float targets [4]	//when monitoring position, the coordinates we are approaching, X,Y,Z,A
+EndStructure
+
+
+
+//*********************************************************************************************************************************************************************
+//****************Templates for various functions which stage procedures may or may not provide, depending on their feature set***********************
+//*********************************************************************************************************************************************************************
+
+
+//*************************************************************************************************
+// Template for optional function to add special controls for a particular stage encoder to a control panel
+// X and Y offset refer to point offsets to position controls on control panel
+Function StageAddControls_Template(xOffset, yOffset, thePanel)
+	variable xOffset, yOffset
+	string thePanel
+end
+
+// *********************************************************************************************
+// Template for Setting increment for steps, used when stored on the stage encoder
+ThreadSafe Function StageSetStepIncr_Template(thePort, selectedForCMD, StepSize, Properties)
+	string thePort
+	WAVE selectedForCMD
+	WAVE StepSize
+	WAVE Properties
+end
+
+
+// *********************************************************************************************
+// Template for Getting increment for steps, used when stored on the stage encoder
+ThreadSafe Function StageGetStepIncr_Template(thePort, selectedForCMD, StepSize, Properties)
+	string thePort
+	WAVE selectedForCMD
+	WAVE StepSize
+	WAVE Properties
+end
+
+
+//*************************************************************************************************
+// Template for function to lock joystick to stop manual movement of stage encoder
+Threadsafe Function StageSetManual_template(thePort, doLock, Properties)
+	string thePort
+	variable doLock //1 to lock manual movement of stage, 0 to unlock
+	WAVE Properties
+end
+
+
+
+//*************************************************************************************************
+// Template for function to add special controls for a particular stage encoder to the PID panel
+// X and Y offset refer to point offsets to position controls on control panel
+// returns the amount of extra vertical space it added. The function needs to resize the control panel as needed
+Function StageAddPIDControls_Template(Axis, xOffset, yOffset, thePanel)
+	string Axis // X, Y, or Z will be called indepentently
+	variable xOffset, yOffset
+	string thePanel
+
+	return 1
+end
+
+
+//*************************************************************************************************
+// Template for function to fetch PID values
+Threadsafe Function StageFetchPID_Template(thePort, SelectedForCMD, PIDget, Properties)
+	string thePort
+	WAVE SelectedForCMD
+	WAVE PIDGet
+	Wave Properties
+	print "You do not have PID functions configured properly"
+	return 1
+end
+
+//*************************************************************************************************
+// Template for function to set PID values
+Threadsafe Function StageSetPID_Template(thePort, SelectedForCMD, PIDset, Properties)
+	string thePort
+	WAVE SelectedForCMD
+	WAVE PIDset
+	WAVE Properties
+
+	return 1
 end
 
 
@@ -1229,8 +1230,11 @@ Function StageResetIOButtonProc(ba) : ButtonControl
 
 	switch( ba.eventCode )
 		case 2: // mouse up
-			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			StageRestIO (theStageEncoder)
+			String theStageEncoder = stringfromlist (0, ba.win, "_")
+			SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
+			WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
+			FUNCREF StageResetIO_Template StageRestIO = $"StageResetIO_" + theStageEncoder
+			StageRestIO (thePort, Properties)
 			break
 	endswitch
 	return 0

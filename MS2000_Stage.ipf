@@ -557,6 +557,8 @@ Function StageBkgMonitor_MS2000(bks)
 		switch (bks.axesBits)
 			case 16:
 				Properties[%ERR] = 1
+				return 1
+				break
 			case 0:
 				return 1
 				break
