@@ -8,6 +8,7 @@
 #include "GUIPControls"
 #include <SaveRestoreWindowCoords>
 
+// Modified: 2026/01/03 by Jamie Boyd - DimLabel fix 
 // Modified: 2025/12/19 by Jamie Boyd - making threads work
 // Modified: 2025/10/29 by Jamie Boyd - using threads for reading and moving
 // Modified: 2025/07/08 by Jamie Boyd - Use new GUIPSetVar routines
@@ -428,7 +429,7 @@ end
 // *******************************************************************************
 // Gets the step size set on the Device for selected axes, and writes them to the StepSizes wave
 // last modified: 2025/12/19 by Jamie Boyd
-function StageGetIncrement (theStageEncoder, AxisBits, doWait)
+function StageGetIncrement(theStageEncoder, AxisBits, doWait)
 	string theStageEncoder
 	variable axisBits
 	variable doWait
@@ -569,7 +570,7 @@ end
 // *******************************************************************************
 // Commands the Device to move selected a single axis to an absolute position, 
 // i.e., defined as distance from the axis 0 position
-// last modified: 2025/12/19 by Jamie Boyd
+// last modified: 2026/01/03 by Jamie Boyd fixed dimLabels
 Function StagesSetAbsAxis(theStageEncoder, anAxis, moveToPos, returnWhen)
 	string theStageEncoder
 	string anAxis
@@ -592,6 +593,10 @@ Function StagesSetAbsAxis(theStageEncoder, anAxis, moveToPos, returnWhen)
 			break	
 	endSwitch
 	make/FREE/n=4 moveTo
+	SetDimLabel 0,0, X, moveTo
+	SetDimLabel 0,1, Y, moveTo
+	SetDimLabel 0,2, Z, moveTo
+	SetDimLabel 0,3, A, moveTo
 	moveTo[%$anAxis] = moveToPos
 	StagesSetAbs (theStageEncoder, axisBits, moveTo, returnWhen)
 end
@@ -922,7 +927,7 @@ end
 // Has controls for both reading and setting stage coordinates
 // Last modified 2025/11/26 by Jamie Boyd - uses waves instead of variables
 // modified 2025/07/08 by Jamie Boyd - use new GUIPSIsetVarEnable function
-Function StageMakePanel (theStageEncoder)
+Function StageMakePanel(theStageEncoder)
 	string theStageEncoder
 
 	//If panel exists, bring it to the front and exit
@@ -2081,128 +2086,3 @@ Function/S StageListOpen()
 	return rList
 end
 
-
-
-// **********************************************************************************************************************
-// **************** Some functions for move and update that are more easily called from other code **************
-// **********************************************************************************************************************
-
-
-// **********************************************************************************************************************
-// Pass by reference variables. Set ones you don't want updated to NaN. When function returns, values will be updated
-// last modified 2025/12/19 by Jamie Boyd
-Function Stage_UpdateXYZ (theStageEncoder, xVal, yVal, zVal)
-	String theStageEncoder
-	Variable &xVal
-	variable &yVal
-	Variable &zVal
-
-	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
-	WAVE selectedForCMD = $"root:packages:" + theStageEncoder + ":selectedForCMD"
-	WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
-	WAVE Zeros = $"root:packages:" + theStageEncoder + ":absoluteZero"
-	WAVE Properties =  $"root:packages:" + theStageEncoder + ":Properties"
-
-	if (numtype (xVal) == 0)
-		selectedForCMD [%X] = 1
-	endif
-	if (numtype (yVal) == 0)
-		selectedForCMD [%Y] = 1
-	endif
-	if (numtype (zVal) == 0)
-		selectedForCMD [%Z] = 1
-	endif
-
-#ifdef STAGE_IS_THREADED
-	NVAR threadID = $"root:packages:" + theStageEncoder + ":stageThread"
-	newdatafolder/s :tdata
-	variable/G theCmdG = kThreadGetPos
-	duplicate selectedForCMD selectedG
-	WaveClear selectedG
-	ThreadGroupPutDF threadID, :
-	do
-		sleep/S 0.05
-	while (Properties [%BUSY])
-#else
-	funcref  StageUpdate_Template StageUpdate=$"StageUpdate_" + theStageEncoder
-	StageUpdate (thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
-#endif
-	if (numtype (xVal) == 0)
-		xVal = DistsFromZero[%X]
-	endif
-	if (numtype (yVal) == 0)
-		yVal = DistsFromZero[%Y]
-	endif
-	if (numtype (zVal) == 0)
-		zVal = DistsFromZero[%Y]
-	endif
-end
-
-// **********************************************************************************************************************
-// Just for XY. Pass by reference for X and Y
-// last modified 2025/12/19 by Jamie Boyd
-Function Stage_UpdateXY (theStageEncoder, xVal, yVal)
-	string theStageEncoder
-	Variable &xVal
-	variable &yVal
-
-	xval = 1
-	yval = 1
-	variable zVal = NaN
-	Stage_UpdateXYZ (theStageEncoder, xVal, yVal, zVal)
-end
-
-
-// **********************************************************************************************************************
-// just for Z. Zval is returned, no need for pass by reference
-Function Stage_UpdateZ (theStageEncoder)
-	string theStageEncoder
-
-	Variable zVal = 1
-	variable xVal = NaN
-	variable yVal = Nan
-	Stage_UpdateXYZ (theStageEncoder, xVal, yVal, zVal)
-	return zVal
-
-end
-
-
-
-
-
-
-Function StageGoToXY (theStageEncoder, Xpos, yPos)
-	string theStageEncoder
-	variable  Xpos, yPos
-end
-
-Function StageGoToZ (theStageEncoder, Zpos)
-	string theStageEncoder
-	variable Zpos
-end
-
-Function StageGoToXYZ (theStageEncoder, Xpos, yPos, zPos)
-	string theStageEncoder
-	variable  Xpos, yPos, zPos
-end
-
-
-
-
-
-Function StageHasError (theStageEncoder)
-	string theStageEncoder
-
-end
-
-Function StageRestIO (theStageEncoder)
-	string theStageEncoder
-end
-
-
-
-Function testIt ()
-	variable xVal, yVal
-	Stage_UpdateXY ("Microcode2", xVal, yVal)
-	printf "Y axis is at %.3W1Pm and X axis is at %.3W1Pm\r", yVal, xVal
-end
