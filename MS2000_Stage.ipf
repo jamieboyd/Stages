@@ -2,7 +2,7 @@
 #pragma version= 2.0		// modification date 2025/12/15 by Jamie Boyd
 #pragma IgorVersion=8.05	// so we can use threaded version of VDT2  -------MS2000_Stage requires the VDT2 XOP----------
 #include "Stages"
-#include "GUIPMath"			// for 2's complement
+#include "GUIPBitWise"			// for 2's complement
 
 #define MS2000_DEBUG			// prints info to history for debugging
 
@@ -789,18 +789,6 @@ Threadsafe Function StageMoveAbs_MS2000 (thePort, doVerify, selectedForCMD, Move
 	endif
 end
 
-
-//*******************************************************************************
-// background function for use with threads so that control panel is updated
-// Last Modified 2025/12/17 By Jamie Boyd
-Function StageBkgTouch_MS2000 (WMS)
-	STRUCT WMBackgroundStruct &WMS
-	
-	WAVE properties = root:packages:MS2000:properties
-	WAVE distsFromZero = root:packages:MS2000:DistanceFromZero
-	properties [%has_AX] += 0
-	distsFromZero [%A] += 0
-end
 
 
 //*************************************************************************************************

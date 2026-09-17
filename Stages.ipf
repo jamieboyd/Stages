@@ -2,12 +2,14 @@
 #pragma rtGlobals=3				// Use modern global access method and strict wave access
 #pragma DefaultTab={3,20,4}		// Set default tab width in Igor Pro 9 and later
 #pragma rtGlobals=3
-#pragma version= 6				// the threaded version
 #pragma IgorVersion=8.05		// need threaded version of VDT2 XOP
+#pragma version= 6.1			// changes to threading, threaded control panel should update a little more smoothly now
+
 #include "GUIPList"
 #include "GUIPControls"
 #include <SaveRestoreWindowCoords>
 
+// Modified: 2026/09/16 by Jamie Boyd - setvariables use internal numbers
 // Modified: 2026/01/03 by Jamie Boyd - DimLabel fix 
 // Modified: 2025/12/19 by Jamie Boyd - making threads work
 // Modified: 2025/10/29 by Jamie Boyd - using threads for reading and moving
@@ -22,7 +24,7 @@
 
 // **************************** Select Threaded or Unthreaded use *********************************
 // You can choose whether the stage is run in threaded mode or not by leaving exactly one of the following two lines uncommented
-//#define STAGE_IS_THREADED
+//define STAGE_IS_THREADED
 #undef STAGE_IS_THREADED
 
 // update interval,in seconds, for background updating of position from bkgTask or thread
@@ -178,6 +180,11 @@ Function StagePortProc(theStageEncoder, thePortName)
 	if (Properties [%has_Ax])
 		selectedForCMD [%A] =1
 	endif
+	// define touchy background task
+	String/G root:packages:theNewStageEncoder = theStageEncoder
+	string taskName="touchTask_" + theStageEncoder
+	CtrlNamedBackground $taskName, proc = StageBkgTouch, period = ceil(kAUTO_UPDATE_INT * 60), burst = 0, start=1
+	
 #ifdef STAGE_IS_THREADED
 	// start Thread running task
 	WAVE PIDget = $"root:packages:" + theStageEncoder + ":PIDget"
@@ -203,20 +210,84 @@ Function StagePortProc(theStageEncoder, thePortName)
 	duplicate StepSize StepSizeG
 	WAVEClear selectedForCMDG, StepSizeG
 	ThreadGroupPutDF theThread, :
-	// Start touchy background task
-	//funcref StageBkgTouch_Template toucher = $"StageBkgTouch_" +  theStageEncoder
-	string funcName="StageBkgTouch_" +  theStageEncoder
-	string taskName="touchTask_" + theStageEncoder
-	CtrlNamedBackground $taskName, proc = $funcName , period = ceil(kAUTO_UPDATE_INT * 60), burst = 0, start
 #else
 	// do initial update
 	funcref  StageUpdate_Template StageUpdate=$"StageUpdate_" + theStageEncoder
 	StageUpdate(thePort, selectedForCMD, DistanceFromZero, Zeros, Properties)
+	// update setvariables
+	if (Properties [%has_XY])
+		setvariable XDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%X]
+		setvariable YDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Y]
+	endif
+	if (Properties [%has_Z])
+		setvariable ZDistanceSetVar  win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Z]
+	endif
+	if (Properties [%has_Ax])
+		setvariable AxDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%A]
+	endif
 	// Get increments
 	Funcref StageGetStepIncr_Template StageGetStepIncr = $"StageGetStepIncr_" + theStageEncoder
 	StageGetStepIncr(thePort, selectedForCMD, StepSize, Properties)
 #endif
+end
 
+
+//*********************************************************************************************
+// Custom Background Structure for background task to update panel values when threaded
+// contains usual WMSbackground struct plus name of the stage encoder
+// Note you can't use an Igor String in a custom background Structure, but you can use
+// an array of characters
+// Last Modified 2026/09/16 by Jamie Boyd
+Structure StageTouchTaskStruct
+	Struct WMBackgroundStruct WMS	// WMBackgroundStruct as first element
+	char theEncoder [128]			// name of the encoder, as character array not a String. 128 should be enough
+	variable encLen					// length of the name of the encoder 
+EndStructure
+ 
+
+//*********************************************************************************************
+// background function that updates the setvariables for position on the control panel.
+// USed for threaded operation
+// Last Modified 2026/09/16 by Jamie Boyd
+Function StageBkgTouch (s)
+	Struct StageTouchTaskStruct &s
+	
+	variable iS,nS
+	if (s.WMS.started)
+		SVAR thisEncoder = root:packages:theNewStageEncoder		// set immediately before starting the background task
+		// transfer this global Igor String to the character array of the StageTouchTaskStruct
+		nS=strlen (thisEncoder)
+		for (is=0; is < nS; iS+=1)
+			s.theEncoder[iS] = char2num (thisEncoder[is])
+		endfor
+		s.encLen = nS
+		s.WMS.started = 0 
+#ifndef  STAGE_IS_THREADED
+			return 1
+#endif
+	// "reconstitute" the String for name of the stage encoder from the character array  of the StageTouchTaskStruct
+	string theEncoder = ""
+	nS = s.encLen
+	for (is=0; is < nS; iS+=1)
+		theEncoder += num2char(s.theEncoder[iS])
+	endfor
+	// rference needed waves based on encoder name
+	WAVE distsFromZero = $"root:packages:" + theEncoder + ":distanceFromZero"
+	WAVE Properties = $"root:packages:" + theEncoder + ":Properties"
+	String panelName=theEncoder + "_Controls"
+	
+	if (Properties[%has_XY])
+		setvariable XDistanceSetVar win=$panelName, value= _NUM:distsFromZero[%X]
+		setvariable YDistanceSetVar win=$panelName, value= _NUM:distsFromZero[%Y]
+	endif
+	if (Properties [%has_Z])
+		setvariable ZDistanceSetVar  win=$panelName, value= _NUM:distsFromZero[%Z]
+	endif
+	if (Properties [%has_Ax])
+		setvariable AxDistanceSetVar  win=$panelName, value= _NUM:distsFromZero[%A]
+	endif
+	properties [%ERR] += 0
+	return 0
 end
 
 
@@ -228,6 +299,7 @@ Function StageUpdate(theStageEncoder, AxisBits, waitForResult)
 	variable AxisBits
 	variable waitForResult
 	
+	WAVE DistanceFromZero= $"root:packages:" + theStageEncoder + ":DistanceFromZero"
 	WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
 	WAVE selected=$"root:packages:" + theStageEncoder + ":selectedForCMD"
 	selected = 0
@@ -254,13 +326,33 @@ Function StageUpdate(theStageEncoder, AxisBits, waitForResult)
 		do
 			sleep/S 0.05
 		while (Properties [%BUSY])
+		if (Properties [%has_XY])
+			setvariable XDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%X]
+			setvariable YDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Y]
+		endif
+		if (Properties [%has_Z])
+			setvariable ZDistanceSetVar  win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Z]
+		endif
+		if (Properties [%has_Ax])
+			setvariable AxDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%A]
+		endif
 	endif
 #else
 	SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
-	WAVE DistanceFromZero= $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+	
 	WAVE Zeros= $"root:packages:" + theStageEncoder + ":AbsoluteZero"
 	funcref  StageUpdate_Template StageUpdate=$"StageUpdate_" + theStageEncoder
 	StageUpdate(thePort, Selected, DistanceFromZero, Zeros, Properties)
+	if (Properties [%has_XY])
+		setvariable XDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%X]
+		setvariable YDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Y]
+	endif
+	if (Properties [%has_Z])
+		setvariable ZDistanceSetVar  win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Z]
+	endif
+	if (Properties [%has_Ax])
+		setvariable AxDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%A]
+	endif
 #endif
 end
 
@@ -275,7 +367,7 @@ Function StageGetAxisPos (theStageEncoder, AxisStr)
 	return DistanceFromZero[%$AxisStr]
 end
 	
-// *******************************************************************************
+// ******************************************************************************* !@#
 // Turns auto-updating of position on or off
 // last modified: 2025/12/19 by Jamie Boyd
 Function StageSetAuto(theStageEncoder, autoIsOn)
@@ -292,13 +384,15 @@ Function StageSetAuto(theStageEncoder, autoIsOn)
 	endif
 	ThreadGroupPutDF threadID, :
 #else
-	string procName = "StageBkgUpdate_" + theStageEncoder
-	string bkgName= "BkgUpdate_" + theStageEncoder
+	string UpDateprocName = "StageBkgUpdate_" + theStageEncoder
+	string UpDatebkgName= "BkgUpdate_" + theStageEncoder
 	if (autoIsOn)
-		CtrlNamedBackground $bkgName, proc = $procName, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
+		CtrlNamedBackground $UpDatebkgName, proc = $UpDateprocName, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
 	else
-		CtrlNamedBackground $bkgName, stop
+		CtrlNamedBackground $UpDatebkgName, stop
 	endif
+	
+	
 #endif
 end
 
@@ -332,6 +426,7 @@ Function StageSetZero(theStageEncoder, axesBits, waitForResult)
 	WAVEClear selectedG
 	ThreadGroupPutDF threadID, :
 	if (waitForResult)  // if threaded, it will take time for result to be placed in Distance wave
+		WAVE Properties =  $"root:packages:" + theStageEncoder + ":Properties"
 		do
 			sleep/S 0.05
 		while (Properties [%BUSY])
@@ -392,11 +487,11 @@ end
 // *******************************************************************************
 // Sets the step size that will be used for the StageStep procedure, for movements relative to the current position
 // last modified: 2025/12/19 by Jamie Boyd
-function StageSetIncrement(theStageEncoder, AxisStr, Increment, doWait)
+function StageSetIncrement(theStageEncoder, AxisStr, Increment, waitForResult)
 	string theStageEncoder
 	string AxisStr			// One of X, Y, Z, or A
 	variable increment		// step size, in metres. Always positive
-	variable doWait
+	variable waitForResult
 	
 	WAVE selected = $"root:packages:" + theStageEncoder + ":selectedForCMD"
 	WAVE StepSize = $"root:packages:" + theStageEncoder + ":stepSize"
@@ -413,6 +508,7 @@ function StageSetIncrement(theStageEncoder, AxisStr, Increment, doWait)
 	WAVEClear stepSizeG
 	ThreadGroupPutDF threadID, :
 	if (waitForResult)  // if threaded, it will take time for result to be placed in Distance wave
+		WAVE properties = $"root:packages:" + theStageEncoder + ":Properties"
 		do
 			sleep/S 0.05
 		while (Properties [%BUSY])
@@ -429,10 +525,10 @@ end
 // *******************************************************************************
 // Gets the step size set on the Device for selected axes, and writes them to the StepSizes wave
 // last modified: 2025/12/19 by Jamie Boyd
-function StageGetIncrement(theStageEncoder, AxisBits, doWait)
+function StageGetIncrement(theStageEncoder, AxisBits, waitForResult)
 	string theStageEncoder
 	variable axisBits
-	variable doWait
+	variable waitForResult
 	
 	WAVE selected = $"root:packages:" + theStageEncoder + ":selectedForCMD"
 	selected = 0
@@ -457,6 +553,7 @@ function StageGetIncrement(theStageEncoder, AxisBits, doWait)
 	WAVEClear selectedG
 	ThreadGroupPutDF threadID, :
 	if (waitForResult)  // if threaded, it will take time for result to be placed in incremenr wave
+		WAVE properties =  $"root:packages:" + theStageEncoder + ":Properties"
 		do
 			sleep/S 0.05
 		while (Properties [%BUSY])
@@ -925,6 +1022,7 @@ end
 //*******************************************************************************
 // Opens a control panel for common stage related functions
 // Has controls for both reading and setting stage coordinates
+// Last modified 2025/11/26 by Jamie Boyd - uses waves, but setvariables use internal values that can be updated by a thread
 // Last modified 2025/11/26 by Jamie Boyd - uses waves instead of variables
 // modified 2025/07/08 by Jamie Boyd - use new GUIPSIsetVarEnable function
 Function StageMakePanel(theStageEncoder)
@@ -1006,12 +1104,12 @@ Function StageMakePanel(theStageEncoder)
 		// X Position
 		TitleBox XTitle,pos={(xOffset + 4),20},size={15,24},title="X",fSize=20,frame=0,fStyle=1
 		SetVariable XDistanceSetVar,pos={(xOffset+20),24.00},size={121.00,22.00}
-		SetVariable XDistanceSetVar,title="Pos",value=DistanceFromZero[%X],fSize=14, noedit=1
+		SetVariable XDistanceSetVar,title="Pos",fSize=14, noedit=1,value=_NUM:DistanceFromZero[%X] //,value=DistanceFromZero[%X]
 		GUIPSIsetVarEnable ("", "XDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
 		// Y Position
 		TitleBox YTitle,pos={(xOffset + 144),20.00},size={12.00,28.00},title="Y",fSize=20, frame=0,fStyle=1
 		SetVariable YDistanceSetVar, pos={(xOffset + 159),24.00},size={114.00,22.00}
-		SetVariable YDistanceSetVar,title="Pos",value=DistanceFromZero[%Y],fSize=14, noedit=1
+		SetVariable YDistanceSetVar,title="Pos",fSize=14, noedit=1,value=_NUM:DistanceFromZero[%Y] //,value=DistanceFromZero[%Y]
 		GUIPSIsetVarEnable ("", "YDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
 		if (Properties[%has_Mtr])
 			// X steps
@@ -1044,7 +1142,7 @@ Function StageMakePanel(theStageEncoder)
 		GroupBox FocusGroup,pos={(xOffset),2},size={AxisBoxWidth,BoxHeight},title="Focus/Z",fSize=16,fStyle=1
 		TitleBox ZTitle,pos={(xOffset + 4),20},size={15,24},title="Z",fSize=20,frame=0,fStyle=1
 		SetVariable ZDistanceSetVar,pos={(xOffset+20),24.00},size={121.00,22.00}
-		SetVariable ZDistanceSetVar,title="Pos",value=DistanceFromZero[%Z],fSize=14, noedit=1
+		SetVariable ZDistanceSetVar,title="Pos",fSize=14, noedit=1,value=_NUM:DistanceFromZero[%Z],value=DistanceFromZero[%Z]
 		GUIPSIsetVarEnable ("", "ZDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
 		if (Properties[%has_Mtr])
 			Button ZUpStepButton,pos={(xOffset + 33), 50},size={88.00,20.00},proc=StageStepButtonProc
@@ -1065,7 +1163,7 @@ Function StageMakePanel(theStageEncoder)
 		GroupBox AxisGroup,pos={(xOffset),2},size={AxisBoxWidth,boxHeight},title="Axial",fSize=16,fStyle=1
 		TitleBox Axtitle,pos={(xOffset + 4),20},size={15,24},title="A",fSize=20,frame=0,fStyle=1
 		SetVariable AxDistanceSetVar,pos={(xOffset + 20),24},size={121, 22}
-		SetVariable AxDistanceSetVar, title="Pos", value= DistanceFromZero[%A], fSize=14, noedit=1
+		SetVariable AxDistanceSetVar, title="Pos", fSize=14, noedit=1, value= _NUM:DistanceFromZero[%A]//, value= DistanceFromZero[%A]
 		GUIPSIsetVarEnable("", "AxDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
 		if (Properties[%has_Mtr])
 			Button AxOutStepButton,pos={(xOffset + 33), 50},size={88.00,20.00},proc=StageStepButtonProc
@@ -1109,6 +1207,7 @@ end
 //*************************************************************************************************
 // hook function to close the serial port when the panel is closed, although Igor will do this when it quits, so is only needed if you want to use the serial port with another
 // program while Igor is still running, or use a different encoder/port combination.
+// last Modified: 2026/09/16 by Jamie Boyd
 Function StageClosePortAndPanel(s)
 	STRUCT WMWinHookStruct &s
 
@@ -1122,11 +1221,14 @@ Function StageClosePortAndPanel(s)
 			StageCloseFunc (thePort)
 #ifdef STAGE_IS_THREADED
 			// release thread
-			NVAR threadID= $"root:packages:" + theEncoder + ":stageThread"
+			NVAR threadID = $"root:packages:" + theEncoder + ":stageThread"
 			variable Result = ThreadGroupRelease(threadID)
 			if (Result)
 				printf "Stage Thread for %s was not stopped.\r", theEncoder
 			endif
+			// stop touch task
+			string taskName="touchTask_" + theEncoder
+			CtrlNamedBackground taskName, stop=1
 #endif
 			return 1
 			break
@@ -1178,6 +1280,17 @@ Function StageUpdateButtonProc(ba) : ButtonControl
 				axisBits += kAbit
 			endif
 			StageUpdate (theStageEncoder, AxisBits, 0)
+			WAVE distsFromZero =  $"root:packages:" + theStageEncoder + ":DistanceFromZero"
+			if (Properties[%has_XY])
+				setvariable XDistanceSetVar win =$theStageEncoder + "_controls", value = _NUM:distsFromZero[%X]
+				setvariable YDistanceSetVar win =$theStageEncoder + "_controls", value = _NUM:distsFromZero[%Y]
+			endif
+			if (Properties[%has_Z])
+				setvariable ZDistanceSetVar win =$theStageEncoder + "_controls", value = _NUM:distsFromZero[%Z]
+			endif
+			if (Properties[%has_Ax])
+				setvariable AxDistanceSetVar win =$theStageEncoder + "_controls", value = _NUM:distsFromZero[%A]
+			endif
 			break
 	endswitch
 	return 0

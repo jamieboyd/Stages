@@ -130,7 +130,6 @@ threadsafe Function StageUpDate_MicroCode2 (thePort, Selected, DistsFromZero, Ze
 	if (Properties[%has_Z])
 		DistsFromZero[2] = (zS/1E03) - Zeros [2]
 	endif
-//	print "MC2 in the house:" , DistsFromZero[1]
 end
 
 
@@ -146,18 +145,14 @@ Function StageBkgUpdate_MicroCode2 (bks)
 	WAVE Zeros= root:packages:MicroCode2:AbsoluteZero
 	WAVE Properties =  root:packages:MicroCode2:properties
 	StageUpDate_MicroCode2 (thePort, Selected, DistanceFromZero, Zeros, Properties)
+	if (Properties[%has_XY])
+		setvariable XDistanceSetVar win=MicroCode2_Controls, value= _NUM:DistanceFromZero[%X]
+		setvariable YDistanceSetVar win=MicroCode2_Controls, value= _NUM:DistanceFromZero[%Y]
+	endif
+	if (Properties [%has_Z])
+		setvariable ZDistanceSetVar win=MicroCode2_Controls, value= _NUM:DistanceFromZero[%Z]
+	endif
 	return 0
 end
 
 
-//*********************************************************************************************
-// background function that touches waves in datafolder so control panel will update when threaded
-Function StageBkgTouch_MicroCode2 (WMS)
-	STRUCT WMBackgroundStruct &WMS
-	
-	WAVE properties = root:packages:Null:properties
-	WAVE distsFromZero = root:packages:Null:DistanceFromZero
-	properties [%ERR] += 0
-	distsFromZero [%A] += 0
-	return 0
-end
