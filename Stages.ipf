@@ -280,7 +280,10 @@ Function StageBkgUpdatePos (s)
 		if (Properties [%has_Ax])
 			setvariable AxDistanceSetVar  win=$panelName, value= _NUM:distsFromZero[%A]
 		endif
-		properties [%ERR] += 0
+		
+		if (properties [%ERR])
+			ValDisplay hasErrValDisp win = $panelName, value=_NUM:1
+		endif
 	endif
 	return 0
 end
@@ -352,6 +355,7 @@ Function StageUpdate(theStageEncoder, AxisBits, waitForResult)
 	endif
 end
 
+
 // *******************************************************************************
 // Gets current axis position by reading from global wave in data folder
 // last modified: 2025/12/19 by Jamie Boyd
@@ -364,7 +368,7 @@ Function StageGetAxisPos (theStageEncoder, AxisStr)
 end
 	
 	
-// ******************************************************************************* !@#
+// *******************************************************************************
 // Turns auto-updating of position on or off
 // last modified: 2026/09/17 by Jamie Boyd
 Function StageSetAuto(theStageEncoder, autoIsOn)
@@ -455,6 +459,7 @@ Function StageResetIO(theStageEncoder)
 		funcref StageResetIO_Template ResetIO = $"StageResetIO_" + theStageEncoder
 		ResetIO (thePort, properties)
 	endif
+	setvariable hasErrValDisp win = $thePort + "_Controls", value=_NUM:0
 end
 
 // *******************************************************************************
@@ -581,8 +586,99 @@ Function StageGetAxisStepSize(theStageEncoder, AxisStr)
 end
 
 
+//*******************************************************************************
+// structure for background function with extra fields for monitoring positions
+// Last modified 2026/09/17 by Jamie Boyd
+STRUCTURE StageBkgMonitorStruct
+	STRUCT WMBackgroundStruct WMS
+	char theEncoder [128]
+	uint32 encLen
+	uint32 axesBits		// bitwise combo of axes to monitor, 1=X, 2=Y, 4=Z, 8=Ax
+	float targets [4]	//when monitoring position, the coordinates we are approaching, X,Y,Z,A
+EndStructure
+
+
+Function StageBkgMonitor(s)
+	STRUCT StageBkgMonitorStruct &s
+	
+	variable iS,nS
+	if (s.WMS.started)
+		s.WMS.started = 0
+		SVAR thisEncoder = root:packages:theNewStageEncoder		// set immediately before starting the background task
+		NVAR isThreaded = $"root:packages:" + thisEncoder +":stageIsThreaded"
+		// transfer this global Igor String to the character array of the StageBGupdateStruct
+		nS=strlen (thisEncoder)
+		for (is=0; is < nS; iS+=1)
+			s.theEncoder[iS] = char2num (thisEncoder[is])
+		endfor
+		s.encLen = nS
+		// set targets
+		WAVE Selected = $"root:packages:" + thisEncoder + ":selectedForCMD"
+		WAVE MoveTo = $"rroot:packages:" + thisEncoder + ":MoveTo"
+		s.axesBits = 0
+		if (Selected [%X])
+			s.axesBits += 1
+			s.targets[0] = MoveTo[%X]
+		endif
+		if  (Selected [%Y])
+			s.axesBIts += 2
+			s.targets[1] = MoveTo[%Y]
+		endif
+		if (Selected [%Z])
+			s.axesBits += 4
+			s.targets[2] = MoveTo[%Z]
+		endif
+		if (Selected [%A])
+			s.axesBits += 4
+			s.targets[2] = MoveTo[%A]
+		endif
+	else
+		// "reconstitute" the String for name of the stage encoder from the character array  of the StageBGupdateStruct
+		string theEncoder = ""
+		nS = s.encLen
+		for (is=0; is < nS; iS+=1)
+			theEncoder += num2char(s.theEncoder[iS])
+		endfor
+		WAVE MoveTo = $"root:packages:" + theEncoder + ":MoveTo"
+		WAVE DistsFromZero = $"root:packages:" + theEncoder + ":DistanceFromZero"
+		WAVE properties = $"root:packages:" + theEncoder + ":Properties"
+		SVAR thePort = $"root:packages:" + theEncoder + ":thePort"
+		string panelName = theEncoder + "_Controls"
+		
+		FUNCREF StageMonitorFunc_Template monitorFunc = $"StageMonitorFunc_" + theEncoder
+		s.axesBits = monitorFunc (thePort, s.axesBits, MoveTo, DistsFromZero)
+		
+		if (Properties[%has_XY])
+			setvariable XDistanceSetVar win=$panelName, value= _NUM:distsFromZero[%X]
+			setvariable YDistanceSetVar win=$panelName, value= _NUM:distsFromZero[%Y]
+		endif
+		if (Properties [%has_Z])
+			setvariable ZDistanceSetVar  win=$panelName, value= _NUM:distsFromZero[%Z]
+		endif
+		if (Properties [%has_Ax])
+			setvariable AxDistanceSetVar  win=$panelName, value= _NUM:distsFromZero[%A]
+		endif
+			
+		switch (s.axesBits)
+			case 16:
+				
+				Properties[%ERR] = 1
+				ValDisplay hasErrValDisp win = $panelName, value=_NUM:1
+				return 1
+				break
+			case 0:
+				return 1
+				break
+			default:
+				return 0
+				break
+		endswitch
+	endif
+end
+
+
 // *******************************************************************************
-// Commands the Device to move theAxis a single step, size defined by StageSetIncrement, 
+// Commands the Device to move theAxis a single step, size defined by StageSetIncrement,
 // in the positive or negative direction
 // last modified: 2025/12/19 by Jamie Boyd
 Function StageStep(theStageEncoder, theAxis, Direction, returnWhen)
@@ -613,9 +709,7 @@ Function StageStep(theStageEncoder, theAxis, Direction, returnWhen)
 		WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
 		StageMoveRel (thePort, returnWhen, Selected, StepSize, DistsFromZero, Properties)
 		if (returnWhen == kStagesReturnBkg)
-			string procName = "StageBkgMonitor_" + theStageEncoder
-			string bkgName= "BkgMonitor_" + theStageEncoder
-			CtrlNamedBackground $bkgName, proc = $procName, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
+			CtrlNamedBackground $"BkgMonitor_" + theStageEncoder, proc = StageBkgMonitor, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
 		endif
 	endif
 end
@@ -662,9 +756,7 @@ Function StagesSetAbs(theStageEncoder, axisBits, moveToWave, returnWhen)
 		WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
 		StageMoveAbs (thePort,returnWhen, selected, moveToWave, DistsFromZero, Properties)
 		if (returnWhen == kStagesReturnBkg)
-			string procName = "StageBkgMonitor_" + theStageEncoder
-			string bkgName= "BkgMonitor_" + theStageEncoder
-			CtrlNamedBackground $bkgName, proc = $procName, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
+			CtrlNamedBackground $"BkgMonitor_" + theStageEncoder, proc = StageBkgMonitor, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
 		endif
 	endif
 end
@@ -826,22 +918,6 @@ end
 // Template for a function that updates all axes positions, to be called from background task for autoUpdating position
 Function StageBkgUpdate_Template()
 end
-
-// ******************************************************************************
-// Template for function that uses a background task to continuously update axes positions, for non-threaded use,
-Function StageBkgMonitor_Template(bks)
-	STRUCT StageBkgStruct &bks
-end
-
-//*******************************************************************************
-// structure for background function with extra fields for monitoring positions
-// Last modified 2025/11/26 by Jamie Boyd
-STRUCTURE StageBkgStruct
-STRUCT WMBackgroundStruct WMS
-uint32 axesBits		// bitwise combo of axes to monitor, 1=X, 2=Y, 4=Z, 8=Ax
-float targets [4]	//when monitoring position, the coordinates we are approaching, X,Y,Z,A
-EndStructure
-
 
 
 //*********************************************************************************************************************************************************************
@@ -1086,12 +1162,9 @@ Function StageMakePanel(theStageEncoder)
 		Button PIDButton,pos={105.00,76.00},size={48.00,20.00},proc=StagePIDButtonProc ,title="Set PID"
 		Button PIDButton,help={"Opens a panel where proportional-integral-derivative settings for this encoder can be adjusted. Use at your own risk."}
 	endif
-	// Error indicator for this stage encoder, have to use execute
+	// Error indicator for this stage encoder, use 
 	ValDisplay hasErrValDisp,pos={6,133},size={48,18},title="error", help = {"\"Glows\" orange when stage has an error, usually serial port error."}
-	ValDisplay hasErrValDisp,limits={-1,1,0},barmisc={0,0},mode= 1,highColor= (65280,21760,0),lowColor= (56576,56576,56576)
-	string pathstr= "root:packages:" + theStageEncoder + ":properties[%ERR]"
-	string commandStr = "ValDisplay hasErrValDisp value=" + pathstr
-	execute commandStr
+	ValDisplay hasErrValDisp,limits={-1,1,0},barmisc={0,0},mode= 1,highColor= (65280,21760,0),lowColor= (56576,56576,56576), value=_NUM:0
 	// button to save a formatted string containing positions
 	Button SavePosButton,pos={63,130},size={48,20},proc=StageSavePosButtonProc,title="Sv Pos"
 	Button SavePosButton, help = {"Opens a dialog to save current stage position for later recall."}

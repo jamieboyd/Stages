@@ -356,10 +356,9 @@ End
 
 
 //*********************************************************************************************
-// background function that updates stage positions from all axes
-// Last Modified 2025/11/26 by Jamie Boyd
-Function StageBkgUpdate_null(WMS)
-	STRUCT WMBackgroundStruct &WMS
+// function that updates stage positions from all axes, to be called from bkg update function
+// Last Modified 2026/09/17 by Jamie Boyd
+Function StageBkgUpdate_null()
 	
 	SVAR thePort =  root:packages:null:thePort
 	WAVE Selected = root:packages:null:selectedForCMD
@@ -367,21 +366,5 @@ Function StageBkgUpdate_null(WMS)
 	WAVE Zeros= root:packages:null:AbsoluteZero
 	WAVE Properties =  root:packages:null:properties
 	StageUpDate_Null (thePort, Selected, DistanceFromZero, Zeros, Properties)
-	return 0
-end
-
-
-
-//*********************************************************************************************
-// background function that touches waves in data folder so values on control panel are updated
-Function StageTouch_null(WMS)
-	STRUCT WMBackgroundStruct &WMS
-	
-	WAVE DistanceFromZero= root:packages:null:DistanceFromZero
-	WAVE Properties =  root:packages:null:properties
-	WAVE stepSize = root:packages:null:stepSize
-	DistanceFromZero [%A] += 0
-	StepSize [%A] += 0
-	Properties [%has_Ax] += 0
 	return 0
 end

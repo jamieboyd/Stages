@@ -199,7 +199,6 @@ end
 Function StageClose_MS2000(thePortName)
 	string thePortName // Name of the serial port
 	
-	CtrlNamedBackground BKG_MS2000, STOP
 	VDTGetPortList2
 	if (findListItem (thePortName, S_VDT, ";") > -1)
 		VDTClosePort2 $PossiblyQuoteName (thePortName)
@@ -456,7 +455,7 @@ end
 
 
 //*************************************************************************************************
-//Function for checking approach to a position, so we can call it from bkg or move functions
+//Function for checking approach to a position, we can call it from bkgMonitor or thread functions
 //Last Modified 2025/12/17 by Jamie Boyd
 Threadsafe Function StageMonitorFunc_MS2000(thePort, axesBits, MoveTo, DistsFromZero)
 	string thePort
@@ -509,52 +508,6 @@ Threadsafe Function StageMonitorFunc_MS2000(thePort, axesBits, MoveTo, DistsFrom
 		endif
 	endif
 	return axesBits
-end
-
-//***********************************************************************************	
-// BackGround function for monitoring going to target we do a little more than check
-// for position matching target, we first wait until axis is no longer moving, then get pos
-// Last Modified 2025/12/15 by Jamie Boyd
-Function StageBkgMonitor_MS2000(bks)
-	STRUCT StageBkgStruct &bks
-	
-	// NOT threadsafe, so we can reference globals
-	WAVE Properties =  root:packages:MS2000:Properties
-	WAVE Selected = root:packages:MS2000:selectedForCMD
-	WAVE MoveTo = root:packages:MS2000:MoveTo
-	WAVE DistsFromZero = root:packages:MS2000:DistanceFromZero
-	SVAR thePort = root:packages:MS2000:thePort
-	// when starting, set starting conditions in update struct
-	if (bks.WMS.started)
-		bks.WMS.started = 0
-		bks.axesBits = 0
-		if (Selected [%X])
-			bks.axesBits += 1
-			bks.targets[0] = MoveTo[%X]
-		endif
-		if  (Selected [%Y])
-			bks.axesBIts += 2
-			bks.targets[1] = MoveTo[%Y]
-		endif
-		if (Selected [%Z])
-			bks.axesBits += 4
-			bks.targets[2] = MoveTo[%Z]
-		endif
-	else
-		bks.axesBits = StageMonitorFunc_MS2000 (thePort, bks.axesBits, MoveTo, DistsFromZero)
-		switch (bks.axesBits)
-			case 16:
-				Properties[%ERR] = 1
-				return 1
-				break
-			case 0:
-				return 1
-				break
-			default:
-				return 0
-				break
-		endswitch
-	endif
 end
 
 
@@ -741,7 +694,7 @@ Threadsafe Function StageMoveAbs_MS2000 (thePort, doVerify, selectedForCMD, Move
 	WAVE MoveTo
 	WAVE DistsFromZero
 	WAVE Properties
-	
+
 	// value is converted to 3 bytes
 	variable lsb, mb, msb
 	variable axesBits =0
@@ -765,17 +718,27 @@ Threadsafe Function StageMoveAbs_MS2000 (thePort, doVerify, selectedForCMD, Move
 		FromFltTo3b2c ((MoveTo[%Z]/kMS2000XYstepSize),lsb, mb, msb)
 		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Z_AXIS, MOV_POS, 03, lsb, mb, msb, COMMAND_END
 	endif
-	
-	if (doVerify == kStagesReturnAfter)
-		do
-			sleep /C=-1 /s kAUTO_UPDATE_INT
-			axesBits = StageMonitorFunc_MS2000 (thePort, axesBits, MoveTo, DistsFromZero)
-		while ((axesBits > 0) && (axesBits < 16))
-		if (axesBits == 16)
-			Properties [%ERR] =1
-		endif
-	endif
+
+	Switch (doVerify)
+		case kStagesReturnNow: // update DistsFromZero to what they should be is move succeeds
+			DistsFromZero = MoveTo
+			break
+		case kStagesReturnAfter:
+			do
+				sleep /C=-1 /s kAUTO_UPDATE_INT
+				axesBits = StageMonitorFunc_MS2000 (thePort, axesBits, MoveTo, DistsFromZero)
+			while ((axesBits > 0) && (axesBits < 16))
+			if (axesBits == 16)
+				Properties [%ERR] = 1
+			endif
+			break
+		case kStagesReturnBkg:	// return immediately, a thread or a bkg task will be set to monitor position and update DistsFromZero
+			break
+	endSwitch
+
 end
+
+
 
 
 
