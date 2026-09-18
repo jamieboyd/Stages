@@ -10,14 +10,21 @@
 // Use this constant to tell if the Microcode II has Z encoder.
 STATIC CONSTANT kMicroCodehasZ = 0
 
+
+// Constant to set if we want the stage to be used in threaded mode
+STATIC CONSTANT kMicroCodeIsThreaded = 1
+
 //*********************************************************************************************
 // Stage setup function - sets globals for capabilities
-// Last Modified 2025/11/26 by Jamie Boyd
+// Last Modified 2026/09/17 by Jamie Boyd
 Function StageInitGlobals_MicroCode2 ()
 	
 	WAVE Properties =  root:packages:MicroCode2:Properties
 	Properties [%has_XY] = 1
 	Properties [%has_Z] = kMicroCodehasZ
+	NVAR stageIsThreaded =  root:packages:MicroCode2:stageIsThreaded
+	stageIsThreaded = kMicroCodeIsThreaded
+	
 end
 
 
@@ -26,7 +33,6 @@ end
 // Last Modified 2025/11/26 by Jamie Boyd
 Function StageSetUpPort_MicroCode2 (thePortName)
 	string thePortName // string containing name of serial port encoders are plugged into
-	
 	
 	VDT2/P=$PossiblyQuoteName (thePortName) baud=9600, databits=7, in=0, out=0, parity=0, stopbits=1
 	VDTOpenPort2 $PossiblyQuoteName (thePortName)
@@ -134,10 +140,9 @@ end
 
 
 //*********************************************************************************************
-// background function that updates stage positions for all axes, when not threaded
-// Last Modified 2025/11/26 by Jamie Boyd
-Function StageBkgUpdate_MicroCode2 (bks)
-	STRUCT StageBkgStruct &bks
+// function that updates stage positions for all axes, can be called from background
+// Last Modified 2026/09/18 by Jamie Boyd
+Function StageBkgUpdate_MicroCode2 ()
 
 	SVAR thePort =  root:packages:MicroCode2:thePort
 	WAVE Selected = root:packages:MicroCode2:selectedForCMD
@@ -145,14 +150,6 @@ Function StageBkgUpdate_MicroCode2 (bks)
 	WAVE Zeros= root:packages:MicroCode2:AbsoluteZero
 	WAVE Properties =  root:packages:MicroCode2:properties
 	StageUpDate_MicroCode2 (thePort, Selected, DistanceFromZero, Zeros, Properties)
-	if (Properties[%has_XY])
-		setvariable XDistanceSetVar win=MicroCode2_Controls, value= _NUM:DistanceFromZero[%X]
-		setvariable YDistanceSetVar win=MicroCode2_Controls, value= _NUM:DistanceFromZero[%Y]
-	endif
-	if (Properties [%has_Z])
-		setvariable ZDistanceSetVar win=MicroCode2_Controls, value= _NUM:DistanceFromZero[%Z]
-	endif
-	return 0
 end
 
 

@@ -1,6 +1,7 @@
 #pragma rtGlobals=3			// Use modern global access method.
-#pragma version= 2.0		// modification date 2025/12/15 by Jamie Boyd
 #pragma IgorVersion=8.05	// so we can use threaded version of VDT2  -------MS2000_Stage requires the VDT2 XOP----------
+#pragma version= 2.0		// modification date 2026/09/17 by Jamie Boyd
+
 #include "Stages"
 #include "GUIPBitWise"			// for 2's complement
 
@@ -32,6 +33,9 @@ STATIC CONSTANT kMS2000zMax = 5e-04
 // constants for axis resolution (minimum step size in metres)
 CONSTANT  kMS2000XYstepSize = 1e-07
 CONSTANT  kMS2000ZstepSize = 1e-07
+
+// Constant to set if we want the stage to be used in threaded mode
+STATIC CONSTANT kMS2000IsThreaded = 1
 
 // For most things, the low level command set is used (see below) . For things not provided in the low-level commandset,
 // a quick switch is made to high level set and then back
@@ -150,7 +154,7 @@ end
 //*******************************************************************************
 // Set global variables
 // these waves are created by Stage_MakeGlobals 
-// Last Modified 2025/12/15 by Jamie Boyd
+// Last Modified 2026/09/17 by Jamie Boyd
 Function StageInitGlobals_MS2000()
 	
 	WAVE Properties =  root:packages:MS2000:Properties
@@ -170,6 +174,8 @@ Function StageInitGlobals_MS2000()
 	polarity[%X] = kMS2000Xpol
 	polarity[%Y] = kMS2000Ypol
 	polarity[%Z] = kMS2000Zpol
+	NVAR stageIsThreaded = root:packages:MS2000:stageIsThreaded
+	stageIsThreaded = kMS2000IsThreaded
 end
 
 //*********************************************************************************************
@@ -404,64 +410,46 @@ end
 
 
 //*********************************************************************************************
-// Background task function to update stage positions for Applied Scientific's MS-2000 stage encoders
-// for use when Stage is not threaded
-// Last Modified 2025/12/15 by Jamie Boyd
-Function StageBkgUpdate_MS2000(bks)
-	STRUCT StageBkgStruct &bks
+// function that can be called from background task to update stage positions
+// for Applied Scientific's MS-2000 stage encoders for use when Stage is not threaded
+// Last Modified 2026/09/17 by Jamie Boyd
+Function StageBkgUpdate_MS2000()
 	
 	// NOT threadsafe, so we can reference globals
 	WAVE Properties =  root:packages:MS2000:Properties
-	WAVE Selected = root:packages:MS2000:selectedForCMD
 	WAVE DistsFromZero = root:packages:MS2000:DistanceFromZero
 	SVAR thePort = root:packages:MS2000:thePort
-	// when starting, set starting conditions in update struct
-	if (bks.WMS.started)
-		bks.WMS.started = 0
-		bks.axesBits = 0
-		if (Selected [%X])
-			bks.axesBits += 1
-		endif
-		if  (Selected [%Y])
-			bks.axesBIts += 2
-		endif
-		if (Selected [%Z])
-			bks.axesBits += 4
-		endif
-	else
-		// value is returned in 3 bytes
-		variable lsb, mb, msb
+
+	// value is returned in 3 bytes
+	variable lsb, mb, msb
+	if (Properties[%has_XY])
 		// get X axis
-		if (bks.axesBits & 1)
-			VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  X_AXIS, GET_POS, 3, COMMAND_END
-			VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
-			if (V_VDT != 3)
-				Properties[%ERR] = 1
-				return 1
-			endif
-			DistsFromZero[%X] = From3b2cToFlt (lsb, mb, msb) * kMS2000XYstepSize
+		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  X_AXIS, GET_POS, 3, COMMAND_END
+		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
+		if (V_VDT != 3)
+			Properties[%ERR] = 1
+			return 1
 		endif
+		DistsFromZero[%X] = From3b2cToFlt (lsb, mb, msb) * kMS2000XYstepSize
 		
 		// get Y axis
-		if (bks.axesBits & 2)
-			VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Y_AXIS, GET_POS, 3, COMMAND_END
-			VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
-			if (V_VDT != 3)
-				Properties[%ERR] = 1
-				return 1
-			endif
-			DistsFromZero[%Y] = From3b2cToFlt (lsb, mb, msb) * kMS2000XYstepSize
+		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Y_AXIS, GET_POS, 3, COMMAND_END
+		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
+		if (V_VDT != 3)
+			Properties[%ERR] = 1
+			return 1
 		endif
+		DistsFromZero[%Y] = From3b2cToFlt (lsb, mb, msb) * kMS2000XYstepSize
+	endif
+	if  (Properties[%has_Z])
 		// get Z axis
-		if (bks.axesBits & 4)
-			VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Z_AXIS, GET_POS, 3, COMMAND_END
-			VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
-			if (V_VDT != 3)
-				Properties[%ERR] = 1
-				return 1
-			endif
-			DistsFromZero[%Z] = From3b2cToFlt (lsb, mb, msb) * kMS2000ZstepSize
+		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Z_AXIS, GET_POS, 3, COMMAND_END
+		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
+		if (V_VDT != 3)
+			Properties[%ERR] = 1
+			return 1
 		endif
+		DistsFromZero[%Z] = From3b2cToFlt (lsb, mb, msb) * kMS2000ZstepSize
 	endif
 	return 0
 end
