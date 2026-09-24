@@ -165,12 +165,11 @@ end
 //*********************************************************************************************
 // Stage set Zero function sets current stage location to zero, saving coordinates in Zeros wave
 // Last Modied 2025/11/26 by Jamie Boyd
-Threadsafe Function StageSetZero_null  (thePort, selected, DistsFromZero, Zeros, Properties)
+Threadsafe Function StageSetZero_null  (thePort, selected, DistsFromZero, Zeros)
 	string thePort
 	WAVE Selected
 	WAVE DistsFromZero
 	WAVE Zeros
-	WAVE Properties
 
 	sleep/S 0.25
 	if (Selected [%X])
@@ -191,7 +190,7 @@ end
 //*********************************************************************************************
 // Stage update function gets current stage location. For null, we use a random value bounded by max range
 // Last Modied 2025/11/26 by Jamie Boyd
-Threadsafe Function StageUpDate_Null (thePort, Selected, DistsFromZero, Zeros, Properties)
+Threadsafe Function StageUpDate_Null (thePort, Selected, DistsFromZero, Zeros)
 	string thePort
 	WAVE Selected
 	WAVE DistsFromZero
@@ -215,11 +214,10 @@ end
 //*********************************************************************************************
 // Stage set step increment for null does nothing because values in waves in data folder have already been changed
 // Last Modied 2025/11/27 by Jamie Boyd
-Threadsafe Function StageSetStepIncr_null (thePort, selected, StepSize, Properties)
+Threadsafe Function StageSetStepIncr_null (thePort, selected, StepSize)
 	string thePort
 	WAVE Selected
 	WAVE StepSize
-	WAVE Properties
 	
 	sleep/S 0.25
 end
@@ -228,11 +226,10 @@ end
 //*********************************************************************************************
 // Stage get step increment for null does nothing
 // Last Modied 2025/11/27 by Jamie Boyd
-Threadsafe Function StageGetStepIncr_null (thePort, selected, StepSize, Properties)
+Threadsafe Function StageGetStepIncr_null (thePort, selected, StepSize)
 	string thePort
 	WAVE Selected
 	WAVE StepSize
-	WAVE Properties
 	
 	sleep/S 0.25
 end
@@ -240,10 +237,9 @@ end
 //*******************************************************************************
 // Enables or disables manual movement of stage. null does nothing here
 // Last Modied 2025/11/27 by Jamie Boyd
-Threadsafe Function StageSetManual_null (thePort, isOnNotOff, Properties)
+Threadsafe Function StageSetManual_null (thePort, isOnNotOff)
 	string thePort
 	variable isOnNotOff
-	WAVE Properties
 	
 	sleep/S 0.25
 end
@@ -252,13 +248,12 @@ end
 //***********************************************************************************	
 // Stage moves defined step size relative to current position function
 // Last Modied 2025/11/26 by Jamie Boyd
-Threadsafe Function StageMoveRel_null (thePort, verify, Selected, StepSize, DistsFromZero, Properties)
+Threadsafe Function StageMoveRel_null (thePort, verify, Selected, StepSize, DistsFromZero)
 	String thePort
 	variable verify
 	WAVE Selected
 	WAVE StepSize
 	WAVE DistsFromZero
-	WAVE Properties
 	
 	sleep/S 0.25
 	
@@ -280,13 +275,12 @@ end
 //***********************************************************************************	
 // Stage move to absolute position function
 // Last Modied 2025/11/26 by Jamie Boyd
-Threadsafe Function StageMoveAbs_null (thePort, verify, selectedForCMD, MoveTo, DistsFromZero, Properties)
+Threadsafe Function StageMoveAbs_null (thePort, verify, selectedForCMD, MoveTo, DistsFromZero)
 	String thePort
 	Variable verify
 	Wave selectedForCMD
 	WAVE MoveTo
 	WAVE DistsFromZero
-	WAVE Properties
 	 
 	sleep/S 0.25
 	if (selectedForCMD[%X])
@@ -308,23 +302,20 @@ end
 //*************************************************************************************************
 // function to fetch PID values
 // Set pS, iS, dS initally to 1 to fetch value for that PID, or 0 to not fetch
-Threadsafe Function StageFetchPID_null (thePort, SelectedForCMD, PIDget, Properties)
+Threadsafe Function StageFetchPID_null (thePort, SelectedForCMD, PIDget)
 	string thePort
 	WAVE SelectedForCMD
 	WAVE PIDGet
-	Wave Properties
 	
 end
 
 //*************************************************************************************************
 // Template for function to set PID values
-Threadsafe Function StageSetPID_null (thePort, SelectedForCMD, PIDset, Properties)
+Threadsafe Function StageSetPID_null (thePort, SelectedForCMD, PIDset)
 	string thePort
 	WAVE SelectedForCMD
 	WAVE PIDset
-	WAVE Properties
-	
-	
+		
 end
 
 
@@ -365,6 +356,6 @@ Function StageBkgUpdate_null()
 	WAVE DistanceFromZero= root:packages:null:DistanceFromZero
 	WAVE Zeros= root:packages:null:AbsoluteZero
 	WAVE Properties =  root:packages:null:properties
-	StageUpDate_Null (thePort, Selected, DistanceFromZero, Zeros, Properties)
+	StageUpDate_Null (thePort, Selected, DistanceFromZero, Zeros)
 	return 0
 end

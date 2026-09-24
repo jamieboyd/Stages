@@ -1,7 +1,10 @@
-#pragma rtGlobals=1		// Use modern global access method.
-#pragma version= 1.0		// modification date Sep 11 2009 by Jamie Boyd
-#pragma IgorVersion=6.1
-#include "Stages"
+#pragma TextEncoding = "UTF-8"
+#pragma rtGlobals=3				// Use modern global access method.
+#pragma DefaultTab={3,20,4}		// Set default tab width in Igor Pro 9 and later
+#pragma IgorVersion=8.05		// Uses threadsafe VDT2 extension first shipped with Igor 8.05
+
+#pragma version= 2.1			// Last Modified 2026/09/22 by Jamie Boyd
+
 
 // MP285 requires the VDT2 XOP
 

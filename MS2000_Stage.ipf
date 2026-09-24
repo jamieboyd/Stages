@@ -1,6 +1,8 @@
-#pragma rtGlobals=3			// Use modern global access method.
-#pragma IgorVersion=8.05	// so we can use threaded version of VDT2  -------MS2000_Stage requires the VDT2 XOP----------
-#pragma version= 2.0		// modification date 2026/09/17 by Jamie Boyd
+#pragma TextEncoding = "UTF-8"
+#pragma rtGlobals=3				// Use modern global access method and strict wave access
+#pragma DefaultTab={3,20,4}		// Set default tab width in Igor Pro 9 and later
+#pragma IgorVersion=8.05		// so we can use threaded version of VDT2  -------MS2000_Stage requires the VDT2 XOP----------
+#pragma version= 2.0			// modification date 2026/09/18 by Jamie Boyd
 
 #include "Stages"
 #include "GUIPBitWise"			// for 2's complement
@@ -30,12 +32,12 @@ STATIC CONSTANT kMS2000yMAX = 5e-03
 STATIC CONSTANT kMS2000zMIN = -5e-04
 STATIC CONSTANT kMS2000zMax = 5e-04
 
-// constants for axis resolution (minimum step size in metres)
+// constants for axis resolution (minimum step size in metres) 
 CONSTANT  kMS2000XYstepSize = 1e-07
 CONSTANT  kMS2000ZstepSize = 1e-07
 
 // Constant to set if we want the stage to be used in threaded mode
-STATIC CONSTANT kMS2000IsThreaded = 1
+STATIC CONSTANT kMS2000IsThreaded = 0
 
 // For most things, the low level command set is used (see below) . For things not provided in the low-level commandset,
 // a quick switch is made to high level set and then back
@@ -307,12 +309,10 @@ End
 //*********************************************************************************************
 // Reset I/O function for MS2000, clears any pending commands
 // Last Modified 2025/12/15 by Jamie Boyd
-Threadsafe Function StageResetIO_MS2000(thePort, Properties)
+Threadsafe Function StageResetIO_MS2000(thePort)
 	string thePort // Name of the serial port
-	WAVE Properties
 	
 	vdt2/P =$possiblyquotename (thePort) killio
-	Properties [%ERR] = 0
 	// Ensure using low-level command set
 	VDTWriteBinary2/P =$possiblyquotename (thePort)/TYPE=72 /O=1 255, LOW_LEVEL
 end
@@ -321,11 +321,10 @@ end
 //*******************************************************************************
 // Sets the current position to be Zero, i.e.distance from home = 0
 // Last Modified 2025/12/15 by Jamie Boyd
-Threadsafe Function StageSetZero_MS2000(thePort, DistsFromZero, Zeros, Properties)
+Threadsafe Function StageSetZero_MS2000(thePort, DistsFromZero, Zeros)
 	string thePort
 	WAVE DistsFromZero
 	WAVE Zeros
-	WAVE Properties
 
 	// switch to high-level format - doesn't appear to be a way to do this with low-level commandset
 	VDTWriteBinary2/P =$possiblyquotename (thePort)/TYPE=72/O=1 255, HIGH_LEVEL
@@ -333,7 +332,6 @@ Threadsafe Function StageSetZero_MS2000(thePort, DistsFromZero, Zeros, Propertie
 	string readStr
 	vdtread2/o=1/T= "\n" readStr // read result, which we ignore
 	if (!(V_VDT))
-		Properties[%ERR] = 1
 #ifdef MS2000_DEBUG
 		printf "MS000 Set Zero failed to return result.\r"
 #endif
@@ -344,18 +342,18 @@ Threadsafe Function StageSetZero_MS2000(thePort, DistsFromZero, Zeros, Propertie
 	VDTWriteBinary2/P =$possiblyquotename (thePort)/TYPE=72 /O=1 255, LOW_LEVEL
 	// Update displayed positions
 	DistsFromZero =0
+	return 0
 End
 
 
 //*********************************************************************************************
 // Stage update function for Applied Scientific's MS-2000 stage encoders
 // Last Modified 2025/12/15 by Jamie Boyd
-Threadsafe Function StageUpdate_MS2000(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
+Threadsafe Function StageUpdate_MS2000(thePort, selectedForCMD, DistsFromZero, Zeros)
 	string thePort
 	WAVE selectedForCMD
 	WAVE DistsFromZero
 	WAVE Zeros
-	WAVE Properties
 	
 	// value is returned in 3 bytes
 	variable lsb, mb, msb
@@ -364,7 +362,6 @@ Threadsafe Function StageUpdate_MS2000(thePort, selectedForCMD, DistsFromZero, Z
 		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  X_AXIS, GET_POS, 3, COMMAND_END
 		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
 	if (V_VDT != 3)
-		Properties[%ERR] = 1
 #ifdef MS2000_DEBUG
 		printf "MS000 Stage Update X axis failed to return result.\r"
 #endif
@@ -378,7 +375,6 @@ Threadsafe Function StageUpdate_MS2000(thePort, selectedForCMD, DistsFromZero, Z
 		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Y_AXIS, GET_POS, 3, COMMAND_END
 		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
 		if (V_VDT != 3)
-			Properties[%ERR] = 1
 #ifdef MS2000_DEBUG
 			printf "MS000 Stage Update Y axis failed to return result.\r"
 #endif
@@ -394,7 +390,6 @@ Threadsafe Function StageUpdate_MS2000(thePort, selectedForCMD, DistsFromZero, Z
 		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Z_AXIS, GET_POS, 3, COMMAND_END
 		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
 		if (V_VDT != 3)
-			Properties[%ERR] = 1
 #ifdef MS2000_DEBUG
 			printf "MS000 Stage Update Z axis failed to return result.\r"
 #endif
@@ -405,53 +400,10 @@ Threadsafe Function StageUpdate_MS2000(thePort, selectedForCMD, DistsFromZero, Z
 		printf "The Z axis is at %.3W1Pm.\r", DistsFromZero[%Z]
 #endif
 	endif
-end
-
-
-//*********************************************************************************************
-// function that can be called from background task to update stage positions
-// for Applied Scientific's MS-2000 stage encoders for use when Stage is not threaded
-// Last Modified 2026/09/17 by Jamie Boyd
-Function StageBkgUpdate_MS2000()
-	
-	// NOT threadsafe, so we can reference globals
-	WAVE Properties =  root:packages:MS2000:Properties
-	WAVE DistsFromZero = root:packages:MS2000:DistanceFromZero
-	SVAR thePort = root:packages:MS2000:thePort
-
-	// value is returned in 3 bytes
-	variable lsb, mb, msb
-	if (Properties[%has_XY])
-		// get X axis
-		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  X_AXIS, GET_POS, 3, COMMAND_END
-		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
-		if (V_VDT != 3)
-			Properties[%ERR] = 1
-			return 1
-		endif
-		DistsFromZero[%X] = From3b2cToFlt (lsb, mb, msb) * kMS2000XYstepSize
-		
-		// get Y axis
-		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Y_AXIS, GET_POS, 3, COMMAND_END
-		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
-		if (V_VDT != 3)
-			Properties[%ERR] = 1
-			return 1
-		endif
-		DistsFromZero[%Y] = From3b2cToFlt (lsb, mb, msb) * kMS2000XYstepSize
-	endif
-	if  (Properties[%has_Z])
-		// get Z axis
-		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Z_AXIS, GET_POS, 3, COMMAND_END
-		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
-		if (V_VDT != 3)
-			Properties[%ERR] = 1
-			return 1
-		endif
-		DistsFromZero[%Z] = From3b2cToFlt (lsb, mb, msb) * kMS2000ZstepSize
-	endif
 	return 0
 end
+
+
 
 
 //*************************************************************************************************
@@ -514,11 +466,10 @@ end
 // *********************************************************************************************
 // Function for Setting increment for steps, used when stored on the stage encoder
 // Last modified 2025/12/17 by Jamie Boyd
-ThreadSafe Function StageSetStepIncr_MS2000 (thePort, selectedForCMD, StepSize, Properties)
+ThreadSafe Function StageSetStepIncr_MS2000 (thePort, selectedForCMD, StepSize)
 	string thePort
 	WAVE selectedForCMD
 	WAVE StepSize
-	WAVE Properties
 	
 	// value is converted to 3 bytes
 	variable lsb, mb, msb
@@ -544,7 +495,6 @@ ThreadSafe Function StageSetStepIncr_MS2000 (thePort, selectedForCMD, StepSize, 
 		VDTWriteBinary2 /P=$possiblyquotename (thePort) /TYPE=72 /O=1  X_AXIS, GET_INCR, 03, COMMAND_END
 		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
 		if (V_VDT != 3)
-			Properties[%ERR] = 1
 			printf "MS000 Stage Fetch X step size failed to return result.\r"
 			return 1
 		endif
@@ -555,7 +505,6 @@ ThreadSafe Function StageSetStepIncr_MS2000 (thePort, selectedForCMD, StepSize, 
 		VDTWriteBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72  Y_AXIS, GET_INCR, 03, COMMAND_END,
 		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
 		if (V_VDT != 3)
-			Properties[%ERR] = 1
 			printf "MS000 Stage Fetch Y step size failed to return result.\r"
 			return 1
 		endif
@@ -566,23 +515,22 @@ ThreadSafe Function StageSetStepIncr_MS2000 (thePort, selectedForCMD, StepSize, 
 		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Z_AXIS, GET_INCR, 03, COMMAND_END
 		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
 		if (V_VDT != 3)
-			Properties[%ERR] = 1
 			printf "MS000 Stage Fetch Z step size failed to return result.\r"
 			return 1
 		endif
 		printf "The Z-axis increment value is %.2W1Pm.\r", (From3b2cToFlt (lsb, mb, msb) * kMS2000ZstepSize)
 	endif
 #endif
+	return 0
 end
 
 // *********************************************************************************************
 // Functon for Getting increment for steps, used when stored on the stage encoder
 // Last modified 2025/12/17 by Jamie Boyd
-ThreadSafe Function StageGetStepIncr_MS2000 (thePort, selectedForCMD, StepSize, Properties)
+ThreadSafe Function StageGetStepIncr_MS2000 (thePort, selectedForCMD, StepSize)
 	string thePort
 	WAVE selectedForCMD
 	WAVE StepSize
-	WAVE Properties
 	
 	// value is returned in 3 bytes
 	variable lsb, mb, msb
@@ -591,7 +539,6 @@ ThreadSafe Function StageGetStepIncr_MS2000 (thePort, selectedForCMD, StepSize, 
 		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  X_AXIS, GET_INCR, 03, COMMAND_END
 		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
 		if (V_VDT != 3)
-			Properties[%ERR] = 1
 #ifdef MS2000_DEBUG
 			printf "MS000 Stage Fetch X step size failed to return result.\r"
 #endif
@@ -604,7 +551,6 @@ ThreadSafe Function StageGetStepIncr_MS2000 (thePort, selectedForCMD, StepSize, 
 		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Y_AXIS, GET_INCR, 03, COMMAND_END
 		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
 		if (V_VDT != 3)
-			Properties[%ERR] = 1
 #ifdef MS2000_DEBUG
 			printf "MS000 Stage Fetch Y step size failed to return result.\r"
 #endif
@@ -617,7 +563,6 @@ ThreadSafe Function StageGetStepIncr_MS2000 (thePort, selectedForCMD, StepSize, 
 		VDTWriteBinary2/P=$possiblyquotename (thePort) /TYPE=72 /O=1  Z_AXIS, GET_INCR, 03, COMMAND_END
 		VDTReadBinary2/P=$possiblyquotename (thePort)/O=1 /TYPE=72 lsb, mb, msb
 		if (V_VDT != 3)
-			Properties[%ERR] = 1
 #ifdef MS2000_DEBUG
 			printf "MS000 Stage Fetch Z step size failed to return result.\r"
 #endif
@@ -916,10 +861,8 @@ Function testINFO ()
 	VDTWriteBinary2/TYPE=72 /O=1 255, 66
 end
 
-•testINFO ()
-  
 
-
+// Sample output of testINFO function
   Axis Name    :  X                Limits Status:  
   Input Device :      JS_X [J]       In_Dev Sign  :         1
   Max Lim      :    99.742 [SU]    Min Lim      :  -120.258 [SL] 

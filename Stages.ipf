@@ -1,15 +1,14 @@
 #pragma TextEncoding = "UTF-8"
 #pragma rtGlobals=3				// Use modern global access method and strict wave access
 #pragma DefaultTab={3,20,4}		// Set default tab width in Igor Pro 9 and later
-#pragma rtGlobals=3
 #pragma IgorVersion=8.05		// need threaded version of VDT2 XOP
-#pragma version= 6.1			// changes to threading, threaded control panel should update a little more smoothly now
+#pragma version= 6.1			// changes to threading, control panel should update a little more smoothly now
 
 #include "GUIPList"
 #include "GUIPControls"
 #include <SaveRestoreWindowCoords>
 
-// Modified: 2026/09/17 by Jamie Boyd - setvariables use internal numbers
+// Modified: 2026/09/22 by Jamie Boyd - 
 // Modified: 2026/01/03 by Jamie Boyd - DimLabel fix 
 // Modified: 2025/12/19 by Jamie Boyd - making threads work
 // Modified: 2025/10/29 by Jamie Boyd - using threads for reading and moving
@@ -45,6 +44,188 @@ Menu "Macros"
 		"Open Stage and Focus Panel",/Q,StageStart()
 		"Stop Thread", /Q, StageStopThread()
 	end
+end
+
+
+// ******************************************* BackGroundTasks and their Structures ********************************************
+// Functions for background tasks used when auto-updating axes positions or when monitoring positions during a move
+// ***************************************************************************************************************************
+
+
+//*********************************************************************************************
+// Custom Background Structure for background task to update setvariables when threaded, and for
+// auto-updating position when non-threaded. We just need to know name of the stage we are auto-updating
+// contains usual WMSbackground struct plus name of the stage encoder
+// Note you can't use an Igor String in a custom background Structure, but you can use
+// an array of characters
+// Last Modified 2026/09/19 by Jamie Boyd
+Structure StageBGupdateStruct
+	Struct WMBackgroundStruct WMS	// WMBackgroundStruct as first element
+	char theEncoder [128]			// name of the encoder, as character array (not a String). 128 should be enough
+	variable encLen					// length of the name of the encoder
+EndStructure
+ 
+
+//*********************************************************************************************
+// background function that updates the setvariables on the control panel. Used for threaded operation.
+// Modifications to the waves holding positions and step size made from the thread are not
+// immediately reflected on the control panel. The waves holding control panel values must be
+// modified outside the thread for Igor to notice. Adding zero to one point of the wave is enough.
+// Last Modified 2026/09/19 by Jamie Boyd
+Function StageBkgUpdateControls (s)
+	Struct StageBGupdateStruct &s
+	
+	variable iS,nS
+	if (s.WMS.started)
+		SVAR thisEncoder = root:packages:theNewStageEncoder		// set immediately before starting the background task
+		// transfer this global Igor String to the character array of the StageBGupdateStruct
+		nS=strlen (thisEncoder)
+		for (is=0; is < nS; iS+=1)
+			s.theEncoder[iS] = char2num (thisEncoder[is])
+		endfor
+		s.encLen = nS
+		s.WMS.started = 0
+	else
+		// "reconstitute" the String for name of the stage encoder from the character array  of the StageBGupdateStruct
+		string theEncoder = ""
+		nS = s.encLen
+		for (is=0; is < nS; iS+=1)
+			theEncoder += num2char(s.theEncoder[iS])
+		endfor
+		// reference needed waves based on encoder name. All we need to do is "touch" the waves so Igor gets the message they have been modified
+		WAVE distsFromZero = $"root:packages:" + theEncoder + ":distanceFromZero"
+		WAVE stepSize = $"root:packages:" + theEncoder + ":StepSize"
+		WAVE Properties = $"root:packages:" + theEncoder + ":Properties"
+		distsFromZero[%A] += 0
+		properties [%BUSY] += 0
+		stepSize [%A] += 0
+	endif
+	return 0
+End		
+
+
+//*********************************************************************************************
+// background function that updates the positions of all axes. For non-threaded use
+// Active when the auto-updating check is on
+// Last Modified 2026/09/19 by Jamie Boyd
+Function StageBkgUpdatePos (s)
+	Struct StageBGupdateStruct &s
+	
+	variable iS,nS
+	if (s.WMS.started)
+		SVAR thisEncoder = root:packages:theNewStageEncoder		// set immediately before starting the background task
+		// transfer this global Igor String to the character array of the StageBGupdateStruct
+		nS=strlen (thisEncoder)
+		for (is=0; is < nS; iS+=1)
+			s.theEncoder[iS] = char2num (thisEncoder[is])
+		endfor
+		s.encLen = nS
+		s.WMS.started = 0
+		return 0
+	else
+		// "reconstitute" the String for name of the stage encoder from the character array  of the StageBGupdateStruct
+		string theEncoder = ""
+		nS = s.encLen
+		for (is=0; is < nS; iS+=1)
+			theEncoder += num2char(s.theEncoder[iS])
+		endfor
+		WAVE DistanceFromZero = $"root:packages:" + theEncoder + ":distanceFromZero"
+		WAVE Zeros = $"root:packages:" + theEncoder + ":absoluteZero"
+		WAVE selected =  $"root:packages:" + theEncoder + ":selectedForCMD"
+		selected = 1
+		SVAR thePort = $"root:packages:" + theEncoder + ":thePort"
+		funcref StageUpdate_Template DeviceUpdate=$"StageUpdate_" + theEncoder
+		if (DeviceUpdate(thePort, Selected, DistanceFromZero, Zeros))
+			WAVE Properties = $"root:packages:" + theEncoder + ":Properties"
+			Properties [%ERR] = 1
+			Properties[%is_auto] =0
+			return 1
+		else
+			return 0
+		endif
+	endif
+end
+
+
+//*******************************************************************************
+// structure for background task function with extra fields for monitoring positions
+// Last modified 2026/09/17 by Jamie Boyd
+STRUCTURE StageBkgMonitorStruct
+	STRUCT WMBackgroundStruct WMS
+	char theEncoder [128]	// name of the stage in a character array, not a string
+	uint32 encLen
+	uint32 axesBits		// bitwise combo of axes to monitor, 1=X, 2=Y, 4=Z, 8=Ax
+	float targets [4]	//when monitoring position, the coordinates we are approaching, X,Y,Z,A
+EndStructure
+
+
+//*******************************************************************************
+// background task function that monitors position after a move command,
+// stopping when the position is reached. Used for non-threaded mode
+// Last modified 2026/09/17 by Jamie Boyd
+Function StageBkgMonitor(s)
+	STRUCT StageBkgMonitorStruct &s
+	
+	variable iS,nS
+	if (s.WMS.started)
+		s.WMS.started = 0
+		SVAR thisEncoder = root:packages:theNewStageEncoder		// set immediately before starting the background task
+		NVAR isThreaded = $"root:packages:" + thisEncoder +":stageIsThreaded"
+		// transfer this global Igor String to the character array of the StageBGupdateStruct
+		nS=strlen (thisEncoder)
+		for (is=0; is < nS; iS+=1)
+			s.theEncoder[iS] = char2num (thisEncoder[is])
+		endfor
+		s.encLen = nS
+		// set targets
+		WAVE Selected = $"root:packages:" + thisEncoder + ":selectedForCMD"
+		WAVE MoveTo = $"rroot:packages:" + thisEncoder + ":MoveTo"
+		s.axesBits = 0
+		if (Selected [%X])
+			s.axesBits += 1
+			s.targets[0] = MoveTo[%X]
+		endif
+		if  (Selected [%Y])
+			s.axesBIts += 2
+			s.targets[1] = MoveTo[%Y]
+		endif
+		if (Selected [%Z])
+			s.axesBits += 4
+			s.targets[2] = MoveTo[%Z]
+		endif
+		if (Selected [%A])
+			s.axesBits += 4
+			s.targets[2] = MoveTo[%A]
+		endif
+	else
+		// "reconstitute" the String for name of the stage encoder from the character array  of the StageBGupdateStruct
+		string theEncoder = ""
+		nS = s.encLen
+		for (is=0; is < nS; iS+=1)
+			theEncoder += num2char(s.theEncoder[iS])
+		endfor
+		// reference waves to call Device's monitor function
+		WAVE MoveTo = $"root:packages:" + theEncoder + ":MoveTo"
+		WAVE DistsFromZero = $"root:packages:" + theEncoder + ":DistanceFromZero"
+		WAVE properties = $"root:packages:" + theEncoder + ":Properties"
+		SVAR thePort = $"root:packages:" + theEncoder + ":thePort"
+		// call the function
+		FUNCREF StageMonitorFunc_Template DeviceMonitorFunc = $"StageMonitorFunc_" + theEncoder
+		s.axesBits = DeviceMonitorFunc(thePort, s.axesBits, MoveTo, DistsFromZero)
+		// if axes still moving, return 0, else return 1 to exit background task
+		switch (s.axesBits)
+			case 16:
+				Properties[%ERR] = 1	// code for error 
+				return 1
+				break
+			case 0:
+				return 1
+				break
+			default:
+				return 0
+				break
+		endswitch
+	endif
 end
 
 
@@ -137,7 +318,7 @@ end
 
 //*********************************************************************************************
 // Sets the global string for serial port to the selected value, and tries to initialize the stage encoder with the port
-// Last Modified 2025/12/03 by Jamie Boyd
+// Last Modified 2026/09/18 by Jamie Boyd
 Function StagePortProc(theStageEncoder, thePortName)
 	String theStageEncoder
 	String thePortName
@@ -145,8 +326,8 @@ Function StagePortProc(theStageEncoder, thePortName)
 	// Save port name in global string in pakages folder for this stage procedure
 	SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
 	thePort = thePortName
-	Funcref StageSetupPort_Template StageSetupPortFunc = $"StageSetUpPort_" + theStageEncoder
-	StageSetupPortFunc (thePort) // initilaize the encoder with the chosen port, do whatever needs to be done for this device
+	Funcref StageSetupPort_Template DeviceSetupPortFunc = $"StageSetUpPort_" + theStageEncoder
+	DeviceSetupPortFunc (thePort) // initilaize the encoder with the chosen port, do whatever needs to be done for this device
 	// Do an initial position update and get step increments from encoder (if encoder stores step increments)
 	WAVE DistanceFromZero= $"root:packages:" + theStageEncoder + ":DistanceFromZero"
 	WAVE Zeros= $"root:packages:" + theStageEncoder + ":AbsoluteZero"
@@ -164,9 +345,20 @@ Function StagePortProc(theStageEncoder, thePortName)
 	if (Properties [%has_Ax])
 		selectedForCMD [%A] =1
 	endif
-	// define background task that updates position setvariables
+	// reset IO error
+	Properties [%ERR] = 0
+	// define background tasks
+	// theNewStageEncoder is used to communicate Device name to background task when task starts
 	String/G root:packages:theNewStageEncoder = theStageEncoder
-	CtrlNamedBackground $"BGupdateTask_" + theStageEncoder, proc = StageBkgUpdatePos, period = ceil(kAUTO_UPDATE_INT * 60), burst = 0, start=1
+	NVAR isThreaded = $"root:packages:"+ theStageEncoder + ":stageIsThreaded"
+	if (isThreaded)
+		CtrlNamedBackground $"BGupdateTask_" + theStageEncoder, proc = StageBkgUpdateControls, period = ceil(kAUTO_UPDATE_INT * 60), burst = 0, start=1
+	else
+		CtrlNamedBackground $"BGupdateTask_" + theStageEncoder, proc = StageBkgUpdatePos, period = ceil(kAUTO_UPDATE_INT * 60), burst = 0, start=1
+		if (Properties[%has_Mtr])
+			CtrlNamedBackground $"BGMonitorTask_" + theStageEncoder, proc = StageBkgMonitor, period = ceil(kAUTO_UPDATE_INT * 60), burst = 0, start=1
+		endif
+	endif
 	// start thread, if stage is threaded
 	NVAR isThreaded = $"root:packages:"+ theStageEncoder + ":stageIsThreaded"
 	if (isThreaded)
@@ -189,103 +381,39 @@ Function StagePortProc(theStageEncoder, thePortName)
 		WaveClear selectedG
 		ThreadGroupPutDF theThread, :tdata
 		// Get step increments from encoder
-		newdatafolder :tdata
-		variable/G :tdata:theCmdG = kThreadGetMvIncr
-		duplicate selectedForCMD :tdata:selectedForCMDG
-		WAVE selectedForCMDG = :tdata:selectedForCMDG
-		duplicate StepSize :tdata:StepSizeG
-		WAVE StepSizeG = :tdata:StepSizeG
-		WAVEClear selectedForCMDG, StepSizeG
-		ThreadGroupPutDF theThread, :tdata
+		if (Properties[%has_Mtr])
+			newdatafolder :tdata
+			variable/G :tdata:theCmdG = kThreadGetMvIncr
+			duplicate selectedForCMD :tdata:selectedForCMDG
+			WAVE selectedForCMDG = :tdata:selectedForCMDG
+			duplicate StepSize :tdata:StepSizeG
+			WAVE StepSizeG = :tdata:StepSizeG
+			WAVEClear selectedForCMDG, StepSizeG
+			ThreadGroupPutDF theThread, :tdata
+		endif
 	else
-		// stop background task until we need it, when auto is pressed
+		// stop background tasks until we need them, when auto is pressed, or when monitoring a move
 		CtrlNamedBackground $"BGupdateTask_" + theStageEncoder, stop=1
+		if (Properties[%has_Mtr])
+			CtrlNamedBackground $"BGMonitorTask_" + theStageEncoder, stop =1
+		endif
 		// do initial update
-		funcref  StageUpdate_Template StageUpdate=$"StageUpdate_" + theStageEncoder
-		StageUpdate(thePort, selectedForCMD, DistanceFromZero, Zeros, Properties)
-		// update setvariables
-		if (Properties [%has_XY])
-			setvariable XDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%X]
-			setvariable YDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Y]
+		funcref  StageUpdate_Template DeviceUpdate=$"StageUpdate_" + theStageEncoder
+		result = DeviceUpdate(thePort, selectedForCMD, DistanceFromZero, Zeros)
+		if (result)
+			Properties[%ERR] = 1
+		else
+			// Get increments
+			if (Properties[%has_Mtr])
+				Funcref StageGetStepIncr_Template DeviceGetStepIncr = $"StageGetStepIncr_" + theStageEncoder
+				result = DeviceGetStepIncr(thePort, selectedForCMD, StepSize)
+				if (result)
+					Properties[%ERR] = 1
+				endif
+			endif
 		endif
-		if (Properties [%has_Z])
-			setvariable ZDistanceSetVar  win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Z]
-		endif
-		if (Properties [%has_Ax])
-			setvariable AxDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%A]
-		endif
-		// Get increments
-		Funcref StageGetStepIncr_Template StageGetStepIncr = $"StageGetStepIncr_" + theStageEncoder
-		StageGetStepIncr(thePort, selectedForCMD, StepSize, Properties)
+		return result
 	endif
-end
-
-
-//*********************************************************************************************
-// Custom Background Structure for background task to update panel values when threaded or when running in autoupdate, non-threaded
-// contains usual WMSbackground struct plus name of the stage encoder
-// Note you can't use an Igor String in a custom background Structure, but you can use
-// an array of characters
-// Last Modified 2026/09/16 by Jamie Boyd
-Structure StageBGupdateStruct
-	Struct WMBackgroundStruct WMS	// WMBackgroundStruct as first element
-	char theEncoder [128]			// name of the encoder, as character array not a String. 128 should be enough
-	variable encLen					// length of the name of the encoder
-	variable isThreaded
-EndStructure
- 
-
-//*********************************************************************************************
-// background function that updates the setvariables for position on the control panel.
-// USed for threaded operation
-// Last Modified 2026/09/17 by Jamie Boyd
-Function StageBkgUpdatePos (s)
-	Struct StageBGupdateStruct &s
-	
-	variable iS,nS
-	if (s.WMS.started)
-		SVAR thisEncoder = root:packages:theNewStageEncoder		// set immediately before starting the background task
-		NVAR isThreaded = $"root:packages:" + thisEncoder +":stageIsThreaded"
-		s.isThreaded = isThreaded
-		// transfer this global Igor String to the character array of the StageBGupdateStruct
-		nS=strlen (thisEncoder)
-		for (is=0; is < nS; iS+=1)
-			s.theEncoder[iS] = char2num (thisEncoder[is])
-		endfor
-		s.encLen = nS
-		s.WMS.started = 0
-	else
-		// "reconstitute" the String for name of the stage encoder from the character array  of the StageBGupdateStruct
-		string theEncoder = ""
-		nS = s.encLen
-		for (is=0; is < nS; iS+=1)
-			theEncoder += num2char(s.theEncoder[iS])
-		endfor
-		// reference needed waves based on encoder name
-		WAVE distsFromZero = $"root:packages:" + theEncoder + ":distanceFromZero"
-		WAVE Properties = $"root:packages:" + theEncoder + ":Properties"
-		String panelName=theEncoder + "_Controls"
-		// if threaded, thread will call update function, else call it from here
-		if (!(s.isThreaded))
-			funcref  StageBkgUpdate_Template BkgUpdate = $"StageBkgUpdate_" + theEncoder
-			BkgUpdate ()
-		endif
-		if (Properties[%has_XY])
-			setvariable XDistanceSetVar win=$panelName, value= _NUM:distsFromZero[%X]
-			setvariable YDistanceSetVar win=$panelName, value= _NUM:distsFromZero[%Y]
-		endif
-		if (Properties [%has_Z])
-			setvariable ZDistanceSetVar  win=$panelName, value= _NUM:distsFromZero[%Z]
-		endif
-		if (Properties [%has_Ax])
-			setvariable AxDistanceSetVar  win=$panelName, value= _NUM:distsFromZero[%A]
-		endif
-		
-		if (properties [%ERR])
-			ValDisplay hasErrValDisp win = $panelName, value=_NUM:1
-		endif
-	endif
-	return 0
 end
 
 
@@ -326,33 +454,19 @@ Function StageUpdate(theStageEncoder, AxisBits, waitForResult)
 			do
 				sleep/S 0.05
 			while (Properties [%BUSY])
-			if (Properties [%has_XY])
-				setvariable XDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%X]
-				setvariable YDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Y]
-			endif
-			if (Properties [%has_Z])
-				setvariable ZDistanceSetVar  win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Z]
-			endif
-			if (Properties [%has_Ax])
-				setvariable AxDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%A]
-			endif
+			DistanceFromZero [%A] += 0
 		endif
+		return 0
 	else
 		SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
 		WAVE Zeros= $"root:packages:" + theStageEncoder + ":AbsoluteZero"
-		funcref  StageUpdate_Template StageUpdate=$"StageUpdate_" + theStageEncoder
-		StageUpdate(thePort, Selected, DistanceFromZero, Zeros, Properties)
-		if (Properties [%has_XY])
-			setvariable XDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%X]
-			setvariable YDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Y]
-		endif
-		if (Properties [%has_Z])
-			setvariable ZDistanceSetVar  win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%Z]
-		endif
-		if (Properties [%has_Ax])
-			setvariable AxDistanceSetVar win=$theStageEncoder + "_Controls", value= _NUM:DistanceFromZero[%A]
+		funcref StageUpdate_Template DeviceUpdate=$"StageUpdate_" + theStageEncoder
+		variable result=DeviceUpdate(thePort, Selected, DistanceFromZero, Zeros)
+		if (result)
+			Properties [%ERR] = 1
 		endif
 	endif
+	return result
 end
 
 
@@ -431,13 +545,17 @@ Function StageSetZero(theStageEncoder, axesBits, waitForResult)
 				sleep/S 0.05
 			while (Properties [%BUSY])
 		endif
+		return 0
 	else
 		SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
 		WAVE DistanceFromZero= $"root:packages:" + theStageEncoder + ":DistanceFromZero"
 		WAVE Zeros= $"root:packages:" + theStageEncoder + ":AbsoluteZero"
-		WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
-		funcref StageSetzero_Template SetZeroProc=$"StageSetzero_" + theStageEncoder
-		SetZeroProc (thePort, selected, DistanceFromZero, Zeros, Properties)
+		funcref StageSetzero_Template DeviceSetZero=$"StageSetzero_" + theStageEncoder
+		variable result = DeviceSetZero(thePort, selected, DistanceFromZero, Zeros)
+		if (result)
+			Properties [%ERR] = 1
+		endif
+		return result
 	endif
 end
 
@@ -456,10 +574,10 @@ Function StageResetIO(theStageEncoder)
 		ThreadGroupPutDF threadID, :tdata
 	else
 		WAVE properties= $"root:packages:" + theStageEncoder + ":Properties"
-		funcref StageResetIO_Template ResetIO = $"StageResetIO_" + theStageEncoder
-		ResetIO (thePort, properties)
+		funcref StageResetIO_Template DeviceResetIO = $"StageResetIO_" + theStageEncoder
+		DeviceResetIO(thePort)
 	endif
-	setvariable hasErrValDisp win = $thePort + "_Controls", value=_NUM:0
+	Properties [%ERR] = 0
 end
 
 // *******************************************************************************
@@ -479,11 +597,16 @@ Function StageSetManual(theStageEncoder, setLock)
 			variable/G :tdata:theCmdG = kThreadUnSetLock
 		endif
 		ThreadGroupPutDF threadID, :tdata
+		return 0
 	else
 		SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
 		WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
-		funcref StageSetManual_template SetManualProc=$"StageSetManual_" + theStageEncoder
-		SetManualProc (thePort, setLock, Properties)
+		funcref StageSetManual_template DeviceSetManual=$"StageSetManual_" + theStageEncoder
+		variable result = DeviceSetManual(thePort, setLock)
+		if (result )
+			Properties [%ERR] = 1
+		endif
+		return result
 	endif
 end
 
@@ -519,11 +642,16 @@ function StageSetIncrement(theStageEncoder, AxisStr, Increment, waitForResult)
 				sleep/S 0.05
 			while (Properties [%BUSY])
 		endif
+		return 0
 	else
 		SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
 		WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
-		funcRef StageSetStepIncr_Template StageSetInc = $"StageSetStepIncr" + theStageEncoder
-		StageSetInc (thePort, selected, StepSize, Properties)
+		funcRef StageSetStepIncr_Template DeviceSetInc = $"StageSetStepIncr" + theStageEncoder
+		variable result = DeviceSetInc(thePort, selected, StepSize)
+		if (result)
+			Properties [%ERR] = 1
+		endif
+		return result
 	endif
 end
 
@@ -565,12 +693,17 @@ function StageGetIncrement(theStageEncoder, AxisBits, waitForResult)
 				sleep/S 0.05
 			while (Properties [%BUSY])
 		endif
+		return 0
 	else
 		SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
 		WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
 		WAVE StepSize = $"root:packages:" + theStageEncoder + ":stepSize"
-		funcRef StageGetStepIncr_Template StageSetInc = $"StageSetStepIncr" + theStageEncoder
-		StageSetInc (thePort, selected, StepSize, Properties)
+		funcRef StageGetStepIncr_Template DeviceSetInc = $"StageSetStepIncr" + theStageEncoder
+		variable result = DeviceSetInc(thePort, selected, StepSize)
+		if (result)
+			Properties [%ERR] = 1
+		endif
+		return result
 	endif
 end
 
@@ -585,96 +718,6 @@ Function StageGetAxisStepSize(theStageEncoder, AxisStr)
 	return StepSize[%$AxisStr]
 end
 
-
-//*******************************************************************************
-// structure for background function with extra fields for monitoring positions
-// Last modified 2026/09/17 by Jamie Boyd
-STRUCTURE StageBkgMonitorStruct
-	STRUCT WMBackgroundStruct WMS
-	char theEncoder [128]
-	uint32 encLen
-	uint32 axesBits		// bitwise combo of axes to monitor, 1=X, 2=Y, 4=Z, 8=Ax
-	float targets [4]	//when monitoring position, the coordinates we are approaching, X,Y,Z,A
-EndStructure
-
-
-Function StageBkgMonitor(s)
-	STRUCT StageBkgMonitorStruct &s
-	
-	variable iS,nS
-	if (s.WMS.started)
-		s.WMS.started = 0
-		SVAR thisEncoder = root:packages:theNewStageEncoder		// set immediately before starting the background task
-		NVAR isThreaded = $"root:packages:" + thisEncoder +":stageIsThreaded"
-		// transfer this global Igor String to the character array of the StageBGupdateStruct
-		nS=strlen (thisEncoder)
-		for (is=0; is < nS; iS+=1)
-			s.theEncoder[iS] = char2num (thisEncoder[is])
-		endfor
-		s.encLen = nS
-		// set targets
-		WAVE Selected = $"root:packages:" + thisEncoder + ":selectedForCMD"
-		WAVE MoveTo = $"rroot:packages:" + thisEncoder + ":MoveTo"
-		s.axesBits = 0
-		if (Selected [%X])
-			s.axesBits += 1
-			s.targets[0] = MoveTo[%X]
-		endif
-		if  (Selected [%Y])
-			s.axesBIts += 2
-			s.targets[1] = MoveTo[%Y]
-		endif
-		if (Selected [%Z])
-			s.axesBits += 4
-			s.targets[2] = MoveTo[%Z]
-		endif
-		if (Selected [%A])
-			s.axesBits += 4
-			s.targets[2] = MoveTo[%A]
-		endif
-	else
-		// "reconstitute" the String for name of the stage encoder from the character array  of the StageBGupdateStruct
-		string theEncoder = ""
-		nS = s.encLen
-		for (is=0; is < nS; iS+=1)
-			theEncoder += num2char(s.theEncoder[iS])
-		endfor
-		WAVE MoveTo = $"root:packages:" + theEncoder + ":MoveTo"
-		WAVE DistsFromZero = $"root:packages:" + theEncoder + ":DistanceFromZero"
-		WAVE properties = $"root:packages:" + theEncoder + ":Properties"
-		SVAR thePort = $"root:packages:" + theEncoder + ":thePort"
-		string panelName = theEncoder + "_Controls"
-		
-		FUNCREF StageMonitorFunc_Template monitorFunc = $"StageMonitorFunc_" + theEncoder
-		s.axesBits = monitorFunc (thePort, s.axesBits, MoveTo, DistsFromZero)
-		
-		if (Properties[%has_XY])
-			setvariable XDistanceSetVar win=$panelName, value= _NUM:distsFromZero[%X]
-			setvariable YDistanceSetVar win=$panelName, value= _NUM:distsFromZero[%Y]
-		endif
-		if (Properties [%has_Z])
-			setvariable ZDistanceSetVar  win=$panelName, value= _NUM:distsFromZero[%Z]
-		endif
-		if (Properties [%has_Ax])
-			setvariable AxDistanceSetVar  win=$panelName, value= _NUM:distsFromZero[%A]
-		endif
-			
-		switch (s.axesBits)
-			case 16:
-				
-				Properties[%ERR] = 1
-				ValDisplay hasErrValDisp win = $panelName, value=_NUM:1
-				return 1
-				break
-			case 0:
-				return 1
-				break
-			default:
-				return 0
-				break
-		endswitch
-	endif
-end
 
 
 // *******************************************************************************
@@ -702,17 +745,21 @@ Function StageStep(theStageEncoder, theAxis, Direction, returnWhen)
 		WaveClear selectedG
 		ThreadGroupPutDF threadID, :tdata
 	else
-		funcRef StageMoveRel_Template StageMoveRel = $"StageMoveRel_" + theStageEncoder
+		funcRef StageMoveRel_Template DeviceMoveRel = $"StageMoveRel_" + theStageEncoder
 		SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
 		WAVE Properties =  $"root:packages:" + theStageEncoder + ":properties"
 		WAVE StepSize = $"root:packages:" + theStageEncoder + ":stepSize"
 		WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
-		StageMoveRel (thePort, returnWhen, Selected, StepSize, DistsFromZero, Properties)
-		if (returnWhen == kStagesReturnBkg)
-			CtrlNamedBackground $"BkgMonitor_" + theStageEncoder, proc = StageBkgMonitor, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
+		if (DeviceMoveRel(thePort, returnWhen, Selected, StepSize, DistsFromZero))
+			Properties [%ERR] = 1
+		else
+			if (returnWhen == kStagesReturnBkg)
+				CtrlNamedBackground $"BkgMonitor_" + theStageEncoder start
+			endif
 		endif
 	endif
 end
+
 
 // *******************************************************************************
 // Commands the Device to move selected axes to an absolute position, i.e., defined as
@@ -749,15 +796,21 @@ Function StagesSetAbs(theStageEncoder, axisBits, moveToWave, returnWhen)
 		duplicate moveToWave moveToG
 		WaveClear selectedG ,moveToG
 		ThreadGroupPutDF threadID, :
+		return 0
 	else
-		funcref StageMoveAbs_Template StageMoveAbs = $"StageMoveAbs_" + theStageEncoder
+		funcref StageMoveAbs_Template DeviceMoveAbs = $"StageMoveAbs_" + theStageEncoder
 		SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
 		WAVE Properties =  $"root:packages:" + theStageEncoder + ":Properties"
 		WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
-		StageMoveAbs (thePort,returnWhen, selected, moveToWave, DistsFromZero, Properties)
-		if (returnWhen == kStagesReturnBkg)
-			CtrlNamedBackground $"BkgMonitor_" + theStageEncoder, proc = StageBkgMonitor, period = (kAUTO_UPDATE_INT * 60), burst = 0, start
+		variable result = DeviceMoveAbs (thePort,returnWhen, selected, moveToWave, DistsFromZero)
+		if (result)
+			Properties [%ERR] = 1
+		else
+			if (returnWhen == kStagesReturnBkg)
+				CtrlNamedBackground $"BkgMonitor_" + theStageEncoder start
+			endif
 		endif
+		return result
 	endif
 end
 
@@ -792,7 +845,7 @@ Function StagesSetAbsAxis(theStageEncoder, anAxis, moveToPos, returnWhen)
 	SetDimLabel 0,2, Z, moveTo
 	SetDimLabel 0,3, A, moveTo
 	moveTo[%$anAxis] = moveToPos
-	StagesSetAbs (theStageEncoder, axisBits, moveTo, returnWhen)
+	return StagesSetAbs (theStageEncoder, axisBits, moveTo, returnWhen)
 end
 
 // To write a procedure for a stage controller device, implement the following templates, as appropriate
@@ -826,33 +879,34 @@ end
 
 //*************************************************************************************************
 // Template for function to reset I/O, clearing any buffers
-Threadsafe Function StageResetIO_Template(thePortName, Properties)
+Threadsafe Function StageResetIO_Template(thePortName)
 	string thePortName // Name of the serial port
-	WAVE Properties
 end
 
 
 //*************************************************************************************************
 // Template for function to set zero position, i.e., zero the stage encoders for all supported axes
-Threadsafe Function StageSetZero_Template(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
+Threadsafe Function StageSetZero_Template(thePort, selectedForCMD, DistsFromZero, Zeros)
 	string thePort
 	WAVE selectedForCMD
 	WAVE DistsFromZero
 	WAVE Zeros
-	WAVE Properties
+	
+	print "You do not have stage encoders configured properly."
+	return 1		// returns 1 if error, else 0
 end
 
 
 //*************************************************************************************************
 // Template for Stage Update functions - the funcref should never resolve to this template function
-Threadsafe Function StageUpdate_Template(thePort, selectedForCMD, DistsFromZero, Zeros, Properties)
+Threadsafe Function StageUpdate_Template(thePort, selectedForCMD, DistsFromZero, Zeros)
 	string thePort
 	WAVE selectedForCMD
 	WAVE DistsFromZero
 	WAVE Zeros
-	WAVE Properties
 
 	print "You do not have stage encoders configured properly."
+	return 1		// returns 1 if error, else 0
 end
 
 
@@ -860,30 +914,30 @@ end
 // Template for Stage Move function that moves a step relative to current position, which stage procedures for controllable stages must provide
 // if they don't support relative movement, use DistsFromZero to translate into absolute movement
 // the funcref should never resolve to this template function
-Threadsafe Function StageMoveRel_Template(thePort, doVerify, selectedForCMD, StepSize, DistsFromZero, Properties)
+Threadsafe Function StageMoveRel_Template(thePort, doVerify, selectedForCMD, StepSize, DistsFromZero)
 	String thePort
 	Variable doVerify		// 0 to not verify movement, just assume we do.
 	WAVE selectedForCMD
 	Wave StepSize
 	WAVE DistsFromZero
-	WAVE Properties
 
 	print "You do not have stage encoders configured properly."
+	return 1		// returns 1 if error, else 0
 end
 
 
 //*************************************************************************************************
 // Template for Stage Move function that moves to an absolute position, which stage procedures for controllable stages must provide
 // the funcref should never resolve to this template function
-Threadsafe Function StageMoveAbs_Template(thePort, doVerify, selectedForCMD, MoveTo, DistsFromZero, Properties)
+Threadsafe Function StageMoveAbs_Template(thePort, doVerify, selectedForCMD, MoveTo, DistsFromZero)
 	String thePort
 	variable doVerify
 	Wave selectedForCMD
 	WAVE MoveTo
 	WAVE DistsFromZero
-	WAVE Properties
 
 	print "You do not have stage encoders configured properly."
+	return 1		// returns 1 if error, else 0
 end
 
 //*************************************************************************************************
@@ -897,27 +951,6 @@ Threadsafe Function StageMonitorFunc_Template(thePort, axesBits, MoveTo, DistsFr
 	WAVE DistsFromZero
 end
 
-
-// ************************************************************************************************************
-// Template for a special background task for use with threaded stage operation. You need to occasionally "touch"
-// the waves in the datafolder for the stage in order for the values in the control panel to be updated.
-// Adding zero to any point in the wave is an adequate way to do this
-// Not needed if you can live with the control panel being out of date
-// FYI: bringing another window to the front, then bringing the control panel to the front again will also update control panel values
-//Function StageBkgUpdatePos_Template(WMS)
-//	STRUCT WMBackgroundStruct &WMS
-//end
-//
-
-//**********************************************************************************************************************************
-//************************* Support for background tasks when Stage is not threaded ***********************************************
-//**********************************************************************************************************************************
-
-
-// ******************************************************************************
-// Template for a function that updates all axes positions, to be called from background task for autoUpdating position
-Function StageBkgUpdate_Template()
-end
 
 
 //*********************************************************************************************************************************************************************
@@ -935,30 +968,27 @@ end
 
 // *********************************************************************************************
 // Template for Setting increment for steps, used when stored on the stage encoder
-ThreadSafe Function StageSetStepIncr_Template(thePort, selectedForCMD, StepSize, Properties)
+ThreadSafe Function StageSetStepIncr_Template(thePort, selectedForCMD, StepSize)
 	string thePort
 	WAVE selectedForCMD
 	WAVE StepSize
-	WAVE Properties
 end
 
 
 // *********************************************************************************************
 // Template for Getting increment for steps, used when stored on the stage encoder
-ThreadSafe Function StageGetStepIncr_Template(thePort, selectedForCMD, StepSize, Properties)
+ThreadSafe Function StageGetStepIncr_Template(thePort, selectedForCMD, StepSize)
 	string thePort
 	WAVE selectedForCMD
 	WAVE StepSize
-	WAVE Properties
 end
 
 
 //*************************************************************************************************
 // Template for function to lock joystick to stop manual movement of stage encoder
-Threadsafe Function StageSetManual_template(thePort, doLock, Properties)
+Threadsafe Function StageSetManual_template(thePort, doLock)
 	string thePort
 	variable doLock //1 to lock manual movement of stage, 0 to unlock
-	WAVE Properties
 end
 
 
@@ -978,11 +1008,10 @@ end
 
 //*************************************************************************************************
 // Template for function to fetch PID values
-Threadsafe Function StageFetchPID_Template(thePort, SelectedForCMD, PIDget, Properties)
+Threadsafe Function StageFetchPID_Template(thePort, SelectedForCMD, PIDget)
 	string thePort
 	WAVE SelectedForCMD
 	WAVE PIDGet
-	Wave Properties
 	print "You do not have PID functions configured properly"
 	return 1
 end
@@ -1074,8 +1103,8 @@ Function StageStartStage(theStageEncoder, [thePort])
 	StageMakeGlobals (theStageEncoder)
 	// Load the procedure, if not already loaded, and execute the Stage Panel function
 	if (exists ("StageSetUpPort_" + theStageEncoder) == 6) // procedure is already loaded
-		FUNCREF StageInitGlobals_Template StageInitGlobals= $"StageInitGlobals_" + theStageEncoder
-		StageInitGlobals ()
+		FUNCREF StageInitGlobals_Template DeviceInitGlobals= $"StageInitGlobals_" + theStageEncoder
+		DeviceInitGlobals ()
 		StageMakePanel (theStageEncoder)
 	else // need to load and compile procedures first
 		Execute/P/Q "INSERTINCLUDE \"" + theStageEncoder + "_Stage\""  //e.g., MS2000_Stage.ipf
@@ -1122,6 +1151,7 @@ Function StageMakePanel(theStageEncoder)
 	WAVE distanceFromZero =$"root:packages:" + theStageEncoder + ":DistanceFromZero"
 	WAVE StepSize = $"root:packages:" + theStageEncoder + ":stepSize"
 	WAVE moveTo = $"root:packages:" + theStageEncoder + ":MoveTo"
+	NVAR stageIsThreaded = $"root:packages:" + theStageEncoder + ":stageIsThreaded"
 	// How wide do we need to make the panel?
 	variable nAxes = 2*Properties[%has_XY] + Properties[%has_Z] + Properties[%has_Ax]
 	variable panelW = optionsBoxWidth + nAxes * AxisBoxWidth
@@ -1162,9 +1192,11 @@ Function StageMakePanel(theStageEncoder)
 		Button PIDButton,pos={105.00,76.00},size={48.00,20.00},proc=StagePIDButtonProc ,title="Set PID"
 		Button PIDButton,help={"Opens a panel where proportional-integral-derivative settings for this encoder can be adjusted. Use at your own risk."}
 	endif
-	// Error indicator for this stage encoder, use 
+	// Error indicator for this stage encoder
 	ValDisplay hasErrValDisp,pos={6,133},size={48,18},title="error", help = {"\"Glows\" orange when stage has an error, usually serial port error."}
-	ValDisplay hasErrValDisp,limits={-1,1,0},barmisc={0,0},mode= 1,highColor= (65280,21760,0),lowColor= (56576,56576,56576), value=_NUM:0
+	ValDisplay hasErrValDisp,limits={-1,1,0},barmisc={0,0},mode= 1,highColor= (65280,21760,0),lowColor= (56576,56576,56576)
+	string commandStr = "ValDisplay hasErrValDisp value = root:packages:" + theStageEncoder + ":Properties[%ERR]"
+	Execute commandStr
 	// button to save a formatted string containing positions
 	Button SavePosButton,pos={63,130},size={48,20},proc=StageSavePosButtonProc,title="Sv Pos"
 	Button SavePosButton, help = {"Opens a dialog to save current stage position for later recall."}
@@ -1174,19 +1206,21 @@ Function StageMakePanel(theStageEncoder)
 		PopupMenu StageGoToPopMenu,mode=0,value=# "StageListSavedPos() + \"\\\\M1(-;Edit Position Wave\""
 	endif
 	//Add axes as required: all controls are placed with x-position relative to an offset
-	variable xOffset = optionsBoxWidth
+	variable xOffset = optionsBoxWidth + 1
 	// first comes XY Stage
 	if (Properties[%has_XY])
 		GroupBox StageXYGroup,pos={(xOffset),2},size={(2*AxisBoxWidth),boxHeight},title="Stage/XY",fSize=16,frame=1,fStyle=1
 		// X Position
 		TitleBox XTitle,pos={(xOffset + 4),20},size={15,24},title="X",fSize=20,frame=0,fStyle=1
 		SetVariable XDistanceSetVar,pos={(xOffset+20),24.00},size={121.00,22.00}
-		SetVariable XDistanceSetVar,title="Pos",fSize=14, noedit=1,value=_NUM:DistanceFromZero[%X] //,value=DistanceFromZero[%X]
+		SetVariable XDistanceSetVar,title="Pos",fSize=14, noedit=1
+		SetVariable XDistanceSetVar value=DistanceFromZero[%X]
 		GUIPSIsetVarEnable ("", "XDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
 		// Y Position
 		TitleBox YTitle,pos={(xOffset + 144),20.00},size={12.00,28.00},title="Y",fSize=20, frame=0,fStyle=1
 		SetVariable YDistanceSetVar, pos={(xOffset + 159),24.00},size={114.00,22.00}
-		SetVariable YDistanceSetVar,title="Pos",fSize=14, noedit=1,value=_NUM:DistanceFromZero[%Y] //,value=DistanceFromZero[%Y]
+		SetVariable YDistanceSetVar,title="Pos",fSize=14, noedit=1
+		SetVariable YDistanceSetVar value=DistanceFromZero[%Y]
 		GUIPSIsetVarEnable ("", "YDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
 		if (Properties[%has_Mtr])
 			// X steps
@@ -1219,7 +1253,8 @@ Function StageMakePanel(theStageEncoder)
 		GroupBox FocusGroup,pos={(xOffset),2},size={AxisBoxWidth,BoxHeight},title="Focus/Z",fSize=16,fStyle=1
 		TitleBox ZTitle,pos={(xOffset + 4),20},size={15,24},title="Z",fSize=20,frame=0,fStyle=1
 		SetVariable ZDistanceSetVar,pos={(xOffset+20),24.00},size={121.00,22.00}
-		SetVariable ZDistanceSetVar,title="Pos",fSize=14, noedit=1,value=_NUM:DistanceFromZero[%Z],value=DistanceFromZero[%Z]
+		SetVariable ZDistanceSetVar,title="Pos",fSize=14, noedit=1
+		SetVariable ZDistanceSetVar value=DistanceFromZero[%Z]
 		GUIPSIsetVarEnable ("", "ZDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
 		if (Properties[%has_Mtr])
 			Button ZUpStepButton,pos={(xOffset + 33), 50},size={88.00,20.00},proc=StageStepButtonProc
@@ -1240,7 +1275,7 @@ Function StageMakePanel(theStageEncoder)
 		GroupBox AxisGroup,pos={(xOffset),2},size={AxisBoxWidth,boxHeight},title="Axial",fSize=16,fStyle=1
 		TitleBox Axtitle,pos={(xOffset + 4),20},size={15,24},title="A",fSize=20,frame=0,fStyle=1
 		SetVariable AxDistanceSetVar,pos={(xOffset + 20),24},size={121, 22}
-		SetVariable AxDistanceSetVar, title="Pos", fSize=14, noedit=1, value= _NUM:DistanceFromZero[%A]//, value= DistanceFromZero[%A]
+		SetVariable AxDistanceSetVar, title="Pos", fSize=14, noedit=1, value= DistanceFromZero[%A]
 		GUIPSIsetVarEnable("", "AxDistanceSetVar", "", -INF, INF, 0, 0, 0, 3, "m")
 		if (Properties[%has_Mtr])
 			Button AxOutStepButton,pos={(xOffset + 33), 50},size={88.00,20.00},proc=StageStepButtonProc
@@ -1257,8 +1292,8 @@ Function StageMakePanel(theStageEncoder)
 		endif
 	endif
 	// invite stage encoder to put up any special controls it has
-	Funcref StageAddControls_Template StageAddFunc = $"StageAddControls_" + theStageEncoder
-	StageAddFunc(4, 97, theStageEncoder + "_Controls") // 4,97 are X and Y offset to where special controls can be placed
+	Funcref StageAddControls_Template DeviceAddFunc = $"StageAddControls_" + theStageEncoder
+	DeviceAddFunc(4, 97, theStageEncoder + "_Controls") // 4,97 are X and Y offset to where special controls can be placed
 	DoUpdate /W=$theStageEncoder + "_Controls" /E=1
 	// Set hook function to close port when panel is closed
 	setwindow $theStageEncoder + "_Controls"  hook(QHook)=StageClosePortAndPanel
@@ -1293,9 +1328,9 @@ Function StageClosePortAndPanel(s)
 		case 2: // Handle Kill
 			WC_WindowCoordinatesSave(s.WinName)
 			// Call Stage's closeport function
-			FuncRef StageClose_Template StageCloseFunc =  $"StageClose_" + theEncoder
+			FuncRef StageClose_Template DeviceCloseFunc =  $"StageClose_" + theEncoder
 			SVAR thePort =$"root:packages:" + theEncoder + ":thePort"
-			StageCloseFunc (thePort)
+			DeviceCloseFunc (thePort)
 			NVAR stageIsThreaded = $"root:packages:" + theEncoder + ":stageIsThreaded"
 			if (stageIsThreaded)
 				// release thread
@@ -1309,8 +1344,11 @@ Function StageClosePortAndPanel(s)
 			CtrlNamedBackground $"BGupdateTask_" + theEncoder, kill=1
 			// delete the panel
 			KillWindow/Z $theEncoder + "_Controls"
-			doupdate
-			killdataFolder/z $"root:packages:" + theEncoder
+			//un-include the procedure file
+			Execute/P/Q "DELETEINCLUDE \"" + theEncoder + "_Stage\""  //e.g., MS2000_Stage.ipf
+			Execute/P/Q "COMPILEPROCEDURES "
+			// delte the datafolder for the encoder
+			EXECUTE/P/Q "killdataFolder/z root:packages:" + theEncoder
 			return 1
 			break
 		default:
@@ -1360,17 +1398,6 @@ Function StageUpdateButtonProc(ba) : ButtonControl
 				axisBits += kAbit
 			endif
 			StageUpdate (theStageEncoder, AxisBits, 0)
-			WAVE distsFromZero =  $"root:packages:" + theStageEncoder + ":DistanceFromZero"
-			if (Properties[%has_XY])
-				setvariable XDistanceSetVar win =$theStageEncoder + "_controls", value = _NUM:distsFromZero[%X]
-				setvariable YDistanceSetVar win =$theStageEncoder + "_controls", value = _NUM:distsFromZero[%Y]
-			endif
-			if (Properties[%has_Z])
-				setvariable ZDistanceSetVar win =$theStageEncoder + "_controls", value = _NUM:distsFromZero[%Z]
-			endif
-			if (Properties[%has_Ax])
-				setvariable AxDistanceSetVar win =$theStageEncoder + "_controls", value = _NUM:distsFromZero[%A]
-			endif
 			break
 	endswitch
 	return 0
@@ -1422,7 +1449,7 @@ End
 
 //*******************************************************************************
 // button procedure for Reset IO Clears any pending I/O on the serial port used for the focus motor, in case there any errors
-// Last modified 2025/11/26 by Jamie Boyd
+// Last modified 2026/09/18 by Jamie Boyd
 Function StageResetIOButtonProc(ba) : ButtonControl
 	STRUCT WMButtonAction &ba
 
@@ -1431,8 +1458,8 @@ Function StageResetIOButtonProc(ba) : ButtonControl
 			String theStageEncoder = stringfromlist (0, ba.win, "_")
 			SVAR thePort =  $"root:packages:" + theStageEncoder + ":thePort"
 			WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
-			FUNCREF StageResetIO_Template StageRestIO = $"StageResetIO_" + theStageEncoder
-			StageRestIO (thePort, Properties)
+			FUNCREF StageResetIO_Template DeviceResetIO = $"StageResetIO_" + theStageEncoder
+			DeviceResetIO (thePort)
 			break
 	endswitch
 	return 0
@@ -1806,11 +1833,11 @@ Function StageGoToSavedPopMenuProc(pa) : PopupMenuControl
 				WaveClear SelectedG, movetoG
 				ThreadGroupPutDF threadID, :tdata
 			else
-				funcref StageMoveAbs_Template    StageMoveAbs = $"StageMoveAbs_" + theStageEncoder
+				funcref StageMoveAbs_Template DeviceMoveAbs = $"StageMoveAbs_" + theStageEncoder
 				SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
 				WAVE Properties =  $"root:packages:" + theStageEncoder + ":Properties"
 				WAVE DistsFromZero = $"root:packages:" + theStageEncoder + ":DistanceFromZero"
-				StageMoveAbs (thePort,returnWhen, selectedForCMD, moveTo, DistsFromZero, Properties)
+				DeviceMoveAbs (thePort,returnWhen, selectedForCMD, moveTo, DistsFromZero)
 			endif
 			break
 	endswitch
@@ -1976,8 +2003,8 @@ Function Stages_GetPIDButtonProc(ba) : ButtonControl
 			else
 				WAVE PIDget =  $"root:packages:" + theStageEncoder + ":PIDget"
 				WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
-				funcref StageFetchPID_Template fetchPID = $"StageFetchPID_" + theStageEncoder
-				fetchPID (thePort, Selected, PIDget, Properties)
+				funcref StageFetchPID_Template DeviceFetchPID = $"StageFetchPID_" + theStageEncoder
+				DeviceFetchPID(thePort, Selected, PIDget)
 			endif
 			break
 	endswitch
@@ -2014,8 +2041,8 @@ Function Stages_SetPIDButtonProc(ba) : ButtonControl
 				ThreadGroupPutDF threadID, :tdata
 			else
 				WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
-				funcRef StageSetPID_Template SetPID = $"StageSetPID_" + theStageEncoder
-				SetPID (thePort, Selected, PIDget, Properties)
+				funcRef StageSetPID_Template DeviceSetPID = $"StageSetPID_" + theStageEncoder
+				DeviceSetPID(thePort, Selected, PIDget, Properties)
 			endif
 			break
 	endswitch
@@ -2033,7 +2060,6 @@ Function Stages_RevertPIDButtonProc(ba) : ButtonControl
 	switch( ba.eventCode )
 		case 2: // mouse up
 			string theStageEncoder = stringfromlist (0, ba.win, "_")
-			funcRef StageSetPID_Template SetPID = $"StageSetPID_" + theStageEncoder
 			string ctrlName = ba.ctrlname
 			string theAxis = ctrlName [0]
 			SVAR thePort = $"root:packages:" + theStageEncoder + ":thePort"
@@ -2044,8 +2070,8 @@ Function Stages_RevertPIDButtonProc(ba) : ButtonControl
 			WAVE PIDset =  $"root:packages:" + theStageEncoder + ":PIDset"
 			PIDset = PIDdefault [%theAxis] [q]
 			WAVE Properties = $"root:packages:" + theStageEncoder + ":Properties"
-			funcRef StageSetPID_Template SetPID = $"StageSetPID_" + theStageEncoder
-			SetPID (thePort, Selected, PIDset, Properties)
+			funcRef StageSetPID_Template DeviceSetPID = $"StageSetPID_" + theStageEncoder
+			DeviceSetPID (thePort, Selected, PIDset, Properties)
 			break
 	endswitch
 	return 0
@@ -2118,7 +2144,10 @@ Threadsafe Function StagePThread(theStageEncoder, DistanceFromZero, Zeros, StepS
 			if (!(DataFolderRefStatus(dfr)))				// we don't have a command to process, but it is time to do an update
 				if (autoUpdate & 1)
 					Properties[%BUSY]=1
-					StageUpdate(thePort, autoSelected, DistanceFromZero, Zeros, Properties)
+					if (StageUpdate(thePort, autoSelected, DistanceFromZero, Zeros))
+						Properties [%ERR] = 1
+						autoUpdate = 0
+					endif
 					Properties[%BUSY]=0
 				endif
 				if (autoUpdate & 2)
@@ -2158,33 +2187,37 @@ Threadsafe Function StagePThread(theStageEncoder, DistanceFromZero, Zeros, StepS
 				break
 			case kThreadSetZero: 		// set zero position for all axes
 				WAVE Selected = dfr:SelectedG
-				setZero (thePort, Selected, DistanceFromZero, Zeros, Properties)
+				if (setZero (thePort, Selected, DistanceFromZero, Zeros))
+					Properties [%ERR] = 1
+				endif
 				break
 			case kThreadResetIO:
-				ResetIO (thePort, Properties)
+				ResetIO (thePort)
 				break
 			case kThreadGetPos:			// get position for selected axes
 				WAVE Selected = dfr:SelectedG
-				StageUpdate (thePort, Selected, DistanceFromZero, Zeros, Properties)
+				if (StageUpdate (thePort, Selected, DistanceFromZero, Zeros))
+					Properties [%ERR] = 1
+				endif
 				break
 			case kThreadSetLock:
-				SetManualLock (thePort, 1, Properties)
+				SetManualLock (thePort, 1)
 				break
 			case kThreadUnSetLock:
-				SetManualLock (thePort, 0, Properties)
+				SetManualLock (thePort, 0)
 				break
 			case kThreadSetMvIncr:
 				WAVE Selected = dfr:SelectedG
 				WAVE StepSizestoSet = dfr:StepSizesG
-				StageSetInc (thePort, selected, StepSizestoSet, Properties)
+				StageSetInc (thePort, selected, StepSizestoSet)
 				break
 			case kThreadGetMvIncr:
-				StageGetInc (thePort, selected, StepSizes, Properties)
+				StageGetInc (thePort, selected, StepSizes)
 				break
 			case kThreadDoStep:
 				NVAR returnWhen = dfr:returnWhenG
 				WAVE Selected = dfr:SelectedG
-				StageMoveRel (thePort, returnWhen, Selected, StepSizes, DistanceFromZero, Properties)
+				StageMoveRel (thePort, returnWhen, Selected, StepSizes, DistanceFromZero)
 				if (returnWhen == kStagesReturnBkg)		// check with thread
 					localMoveTo = DistanceFromZero + StepSizes * Selected
 					autoToDo = 0
@@ -2208,7 +2241,7 @@ Threadsafe Function StagePThread(theStageEncoder, DistanceFromZero, Zeros, StepS
 				NVAR returnWhen = dfr:returnWhenG
 				WAVE Selected = dfr:SelectedG
 				WAVE MoveTo = dfr:MoveToG
-				StageMoveAbs (thePort, kStagesReturnNow, Selected, MoveTo, DistanceFromZero, Properties)
+				StageMoveAbs (thePort, kStagesReturnNow, Selected, MoveTo, DistanceFromZero)
 				if (returnWhen == kStagesReturnBkg)
 					autoToDo = 0
 					if (Selected [%X])
@@ -2235,7 +2268,7 @@ Threadsafe Function StagePThread(theStageEncoder, DistanceFromZero, Zeros, StepS
 				break
 			case kThreadFetchPID:
 				WAVE Selected = dfr:SelectedG
-				StageFetchPID(thePort, Selected, PIDVals, Properties)
+				StageFetchPID(thePort, Selected, PIDVals)
 				break
 		endswitch
 		Properties[%BUSY]=0

@@ -1,6 +1,9 @@
-#pragma rtGlobals=3			// Use modern global access method.
-#pragma version= 2.0		// Last Modified 2025/11/26 by Jamie Boyd
-#pragma IgorVersion=8.05	// Uses threadsafe VDT2 extension first shipped with Igor 8.05
+#pragma TextEncoding = "UTF-8"
+#pragma rtGlobals=3				// Use modern global access method.
+#pragma DefaultTab={3,20,4}		// Set default tab width in Igor Pro 9 and later
+#pragma IgorVersion=8.05		// Uses threadsafe VDT2 extension first shipped with Igor 8.05
+
+#pragma version= 2.1			// Last Modified 2026/09/22 by Jamie Boyd
 
 
 //  MicroCode2 requires the  VDT2 extension
@@ -12,7 +15,7 @@ STATIC CONSTANT kMicroCodehasZ = 0
 
 
 // Constant to set if we want the stage to be used in threaded mode
-STATIC CONSTANT kMicroCodeIsThreaded = 1
+STATIC CONSTANT kMicroCodeIsThreaded = 0
 
 //*********************************************************************************************
 // Stage setup function - sets globals for capabilities
@@ -24,7 +27,6 @@ Function StageInitGlobals_MicroCode2 ()
 	Properties [%has_Z] = kMicroCodehasZ
 	NVAR stageIsThreaded =  root:packages:MicroCode2:stageIsThreaded
 	stageIsThreaded = kMicroCodeIsThreaded
-	
 end
 
 
@@ -43,12 +45,10 @@ end
 // Reset I/O function for MicroCode2, clears any pending serial commands in serial buffers
 // and clears the error display
 // Last Modified 2025/11/26 by Jamie Boyd
-Threadsafe Function StageResetIO_MicroCode2 (thePortName, Properties)
+Threadsafe Function StageResetIO_MicroCode2 (thePortName)
 	string thePortName
-	WAVE Properties
 	
 	vdt2/P =$possiblyquotename (thePortName) killio
-	Properties[%ERR] = 0
 end
 
 
@@ -67,25 +67,24 @@ end
 //*********************************************************************************************
 // MicroCode2 has a physical zero button, but we can also zero in software by saving locations in Zeros wave 
 // Last Modified 2025/11/26 by Jamie Boyd
-Threadsafe Function StageSetZero_MicroCode2 (thePortName, Selected, DistsFromZero, Zeros, Properties)
+Threadsafe Function StageSetZero_MicroCode2 (thePortName, Selected, DistsFromZero, Zeros)
 	string thePortName
 	WAVE Selected
 	WAVE DistsFromZero
 	WAVE Zeros
-	WAVE Properties
 
 	variable xS, yS, zS
 	vdtwrite2/P =$possiblyquotename (thePortName)/O = 2 "\r"
-	if (Properties[%has_Z])
+	if (kMicroCodehasZ)
 		VDTRead2/P =$possiblyquotename (thePortName)/O=2 xS, yS, zS
 		if (V_VDT < 3)
-			Properties[%ERR] = 1
+			return 1
 			xS=nan;yS=Nan;zS=Nan
 		endif
 	else
 		VDTRead2/P =$possiblyquotename (thePortName)/O=2 xS, yS
 		if (V_VDT < 2)
-			Properties[%ERR] = 1
+			return 1
 			xS=nan;yS=Nan;zS=Nan
 		endif
 	endif
@@ -108,48 +107,33 @@ end
 //*********************************************************************************************
 // Update Function gets stage positions from all axes - MicroCode2 can not get data from a single axis
 // Last Modified 2025/11/26 by Jamie Boyd
-threadsafe Function StageUpDate_MicroCode2 (thePort, Selected, DistsFromZero, Zeros, Properties)
+threadsafe Function StageUpDate_MicroCode2 (thePort, Selected, DistsFromZero, Zeros)
 	string thePort
 	WAVE Selected
 	WAVE DistsFromZero
 	WAVE Zeros
-	WAVE Properties
 	
 	variable xS, yS, zS
 	vdtwrite2/P =$possiblyquotename (thePort)/O = 2 "\r"
-	if (Properties [%has_Z])
+	if (kMicrocodehasZ)
 		VDTRead2/P =$possiblyquotename (thePort)/O=2 xS, yS, zS
 		if (V_VDT < 3)
-			Properties[%ERR] = 1
 			xS=nan;yS=Nan;zS=Nan
+			return 1
 		endif
 	else
 		VDTRead2/P =$possiblyquotename (thePort)/O=2 xS, yS
 		if (V_VDT < 2)
-			Properties[%ERR] = 1
 			xS=nan;yS=Nan;zS=Nan
+			return 1
 		endif
 	endif
 	// microcode returns values in mm and we want metres
 	DistsFromZero[0] = (xS/1E03) - Zeros [0]
 	DistsFromZero[1] = (yS/1E03) - Zeros [1]
-	if (Properties[%has_Z])
+	if (kMicroCodehasZ)
 		DistsFromZero[2] = (zS/1E03) - Zeros [2]
 	endif
+	return 0
 end
-
-
-//*********************************************************************************************
-// function that updates stage positions for all axes, can be called from background
-// Last Modified 2026/09/18 by Jamie Boyd
-Function StageBkgUpdate_MicroCode2 ()
-
-	SVAR thePort =  root:packages:MicroCode2:thePort
-	WAVE Selected = root:packages:MicroCode2:selectedForCMD
-	WAVE DistanceFromZero= root:packages:MicroCode2:DistanceFromZero
-	WAVE Zeros= root:packages:MicroCode2:AbsoluteZero
-	WAVE Properties =  root:packages:MicroCode2:properties
-	StageUpDate_MicroCode2 (thePort, Selected, DistanceFromZero, Zeros, Properties)
-end
-
 
