@@ -2,7 +2,7 @@
 #pragma version= 2.0	// Last Modified 2025/12/15 by Jamie Boyd - new version with thread support
 #pragma IgorVersion=8.05
 
-#define STAGE_IS_THREADED
+//#define STAGE_IS_THREADED
 
 STATIC CONSTANT kNullHasXY = 1
 STATIC CONSTANT kNullHasZ = 1
@@ -141,7 +141,7 @@ End
 
 //*********************************************************************************************
 // Opens the serial port for use with null and  gets some initial values
-Function StageSetUpPort_null (thePortName)
+Function StageSetUpPort_null(thePortName)
 	string thePortName
 	
 	// Configure port, open it, and select it for command operations
@@ -158,14 +158,14 @@ end
 
 //*********************************************************************************************
 // Port closing function for null
-Function StageClose_null (thePortName)
+Function StageClose_null(thePortName)
 	string thePortName // Name of the serial port
 end
 
 //*********************************************************************************************
 // Stage set Zero function sets current stage location to zero, saving coordinates in Zeros wave
 // Last Modied 2025/11/26 by Jamie Boyd
-Threadsafe Function StageSetZero_null  (thePort, selected, DistsFromZero, Zeros)
+Threadsafe Function StageSetZero_null(thePort, selected, DistsFromZero, Zeros)
 	string thePort
 	WAVE Selected
 	WAVE DistsFromZero
@@ -190,23 +190,27 @@ end
 //*********************************************************************************************
 // Stage update function gets current stage location. For null, we use a random value bounded by max range
 // Last Modied 2025/11/26 by Jamie Boyd
-Threadsafe Function StageUpDate_Null (thePort, Selected, DistsFromZero, Zeros)
+Threadsafe Function StageUpDate_Null(thePort, Selected, DistsFromZero, Zeros)
 	string thePort
 	WAVE Selected
 	WAVE DistsFromZero
 	WAVE Zeros
-	WAVE Properties
 	
 	sleep/S 0.25
-	if (Properties[%has_XY])
-		DistsFromZero [%X] = enoise(Properties[%max_X]) - Zeros [%X]
-		DistsFromZero [%Y] = enoise(Properties[%max_Y]) - Zeros [%Y]
+	if (Selected[%X])
+		DistsFromZero [%X] = enoise(kNullXMAX) - Zeros [%X]
 	endif
-	if (Properties[%has_Z])
-		DistsFromZero [%Z] = enoise(Properties[%max_Z]) - Zeros [%Z]
+	
+	if (Selected[%Y])
+		DistsFromZero [%Y] = enoise(kNullyMAX) - Zeros [%Y]
 	endif
-	if (Properties[%has_Ax])
-		DistsFromZero [%A] = enoise(Properties[%max_Ax]) - Zeros [%A]
+	
+	if (Selected[%Z])
+		DistsFromZero [%Z] = enoise(kNullzMAX) - Zeros [%Z]
+	endif
+	
+	if (Selected[%A])
+		DistsFromZero [%A] = enoise(kNullAxMAX) - Zeros [%A]
 	endif
 end
 
@@ -355,7 +359,6 @@ Function StageBkgUpdate_null()
 	WAVE Selected = root:packages:null:selectedForCMD
 	WAVE DistanceFromZero= root:packages:null:DistanceFromZero
 	WAVE Zeros= root:packages:null:AbsoluteZero
-	WAVE Properties =  root:packages:null:properties
 	StageUpDate_Null (thePort, Selected, DistanceFromZero, Zeros)
 	return 0
 end
